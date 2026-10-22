@@ -1,0 +1,51 @@
+# Runs once and completes (tests Completed pods and hiding Restart for them).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-migrate
+  namespace: kubelite-demo
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: busybox:1.37
+          command: ["sh", "-c", "echo 'INFO applying migration 041_add_orders_index'; sleep 5; echo 'INFO migration complete'"]
+---
+# Fails once and stays failed (backoffLimit 0).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nightly-export
+  namespace: kubelite-demo
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: export
+          image: busybox:1.37
+          command: ["sh", "-c", "echo 'INFO exporting orders'; sleep 3; echo 'ERROR bucket s3://demo-exports not found' >&2; exit 2"]
+---
+# Every minute (tests suspend/resume and "trigger now").
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: report
+  namespace: kubelite-demo
+spec:
+  schedule: "*/1 * * * *"
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: report
+              image: busybox:1.37
+              command: ["sh", "-c", "echo 'INFO generating hourly report'; sleep 4; echo 'INFO report sent'"]

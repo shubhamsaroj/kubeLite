@@ -1,0 +1,82 @@
+# CrashLoopBackOff: tests error highlighting, restart counts and "previous container" logs.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payments
+  namespace: kubelite-demo
+  labels:
+    app: payments
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: payments
+  template:
+    metadata:
+      labels:
+        app: payments
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.37
+          command: ["sh", "/scripts/crash.sh"]
+          envFrom:
+            - secretRef:
+                name: payments-db
+          volumeMounts:
+            - { name: scripts, mountPath: /scripts }
+          resources:
+            requests: { cpu: 5m, memory: 8Mi }
+            limits: { cpu: 50m, memory: 32Mi }
+      volumes:
+        - name: scripts
+          configMap:
+            name: demo-scripts
+---
+# Pending forever: requests far more memory than any kind node has.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: big-batch
+  namespace: kubelite-demo
+  labels:
+    app: big-batch
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: big-batch
+  template:
+    metadata:
+      labels:
+        app: big-batch
+    spec:
+      containers:
+        - name: worker
+          image: busybox:1.37
+          command: ["sleep", "infinity"]
+          resources:
+            requests: { cpu: 10m, memory: 512Gi }
+---
+# ImagePullBackOff: image tag does not exist.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: legacy-api
+  namespace: kubelite-demo
+  labels:
+    app: legacy-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: legacy-api
+  template:
+    metadata:
+      labels:
+        app: legacy-api
+    spec:
+      containers:
+        - name: api
+          image: busybox:0.0.0-does-not-exist
+          command: ["sleep", "infinity"]

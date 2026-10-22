@@ -1,0 +1,7 @@
+# Prefer: pip install .  (reads pyproject.toml)
+# This file is for tools that expect requirements.txt.
+flask>=3.0
+flask-sock>=0.7
+gevent>=24.2
+kubernetes>=37.0
+pyyaml>=6.0

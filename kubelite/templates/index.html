@@ -1,0 +1,581 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>KubeLite</title>
+  <script src="/static/theme.js"></script>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='1' y='1' width='14' height='14' rx='3' fill='%233b82f6'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/app.css?v={{ version }}">
+  <link rel="stylesheet" href="/static/vendor/xterm.css">
+  <script src="/static/vendor/xterm.js" defer></script>
+  <script src="/static/vendor/addon-fit.js" defer></script>
+  <script type="module" src="/static/app.js?v={{ version }}"></script>
+</head>
+<body>
+<div class="kubelite-root" x-data="kubelite">
+<noscript><p style="padding:24px;font-family:system-ui">KubeLite needs JavaScript enabled.</p></noscript>
+<div class="app">
+
+  <!-- ============================== top bar ============================== -->
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark"></span>KubeLite</div>
+    <div class="cluster-picker" x-show="contexts.length">
+      <span class="top-label">Cluster</span>
+      <select aria-label="Cluster context" :value="ctx" @change="selectContext($event.target.value)">
+        <template x-for="c in contexts" :key="c.id">
+          <option :value="c.id" :selected="c.id === ctx" x-text="c.name + (contexts.some(o => o.name === c.name && o.id !== c.id) ? ' · ' + c.sourceLabel : '')"></option>
+        </template>
+      </select>
+      <button type="button" class="btn-manage-kube" @click="go('connect')">Kubeconfigs</button>
+    </div>
+    <template x-if="ctx && canListNs">
+      <select aria-label="Namespace" :value="ns" @change="setNs($event.target.value)">
+        <option value="_all" :selected="ns === '_all'">All namespaces</option>
+        <template x-for="n in namespaces" :key="n"><option :value="n" :selected="n === ns" x-text="n"></option></template>
+      </select>
+    </template>
+    <template x-if="ctx && !canListNs">
+      <input aria-label="Namespace" :value="ns" @change="setNs($event.target.value.trim())" title="You can't list namespaces; type one" style="width:160px">
+    </template>
+    <button class="search-btn" @click="openPalette()"><span>Search resources, namespaces…</span><span class="kbd">⌘K</span></button>
+    <span class="grow"></span>
+    <span class="row small" x-show="ctx" :class="watchError ? 'tone-bad' : 'tone-ok'">
+      <span class="dot"></span><span x-text="watchError ? 'Connection problem' : 'Connected'"></span>
+    </span>
+    <span class="small tone-warn" x-show="readOnly">Read-only</span>
+    <button type="button" class="edit-mode" x-show="ctx && !readOnly" :class="{ on: editMode }"
+            :title="editMode ? 'Edit mode is on — cluster changes are allowed' : 'Click to enable edit mode (required before delete, scale, shell, etc.)'"
+            @click="toggleEditMode()">
+      <span class="edit-mode-led"></span>
+      <span x-text="editMode ? 'Edit mode on' : 'Enable edit mode'"></span>
+    </button>
+    <div class="seg" role="group" aria-label="Theme">
+      <template x-for="m in ['light', 'dark', 'system']">
+        <button :class="{ on: theme === m }" @click="theme = m; applyTheme()" x-text="m[0].toUpperCase() + m.slice(1)"></button>
+      </template>
+    </div>
+  </header>
+
+  <div class="body">
+    <!-- ============================== sidebar ============================== -->
+    <nav class="sidebar" x-show="view !== 'connect' || ctx">
+      <template x-for="g in NAV">
+        <div>
+          <div class="nav-group" x-show="g.group" x-text="g.group"></div>
+          <template x-for="[id, label] in g.items" :key="id">
+            <div class="nav-item" :class="{ on: view === id }" @click="go(id)">
+              <span x-text="label"></span>
+              <span class="muted small" x-show="id === 'workspace' && L.panes.length > 1" x-text="L.panes.length"></span>
+            </div>
+          </template>
+        </div>
+      </template>
+    </nav>
+
+    <div class="work-area" :class="'dock-' + drawerDock">
+    <main class="main">
+      <div class="banner" x-show="watchError && isKind" x-text="watchError"></div>
+
+      <!-- ============================== connect ============================== -->
+      <section class="scroll" x-show="!ready" style="padding:48px;text-align:center;color:var(--fg3)">Loading…</section>
+      <section class="scroll" x-show="ready && view === 'connect'">
+        <div class="connect">
+          <div class="banner tone-bad" x-show="bootError" x-text="bootError" style="margin-bottom:16px;text-align:left"></div>
+          <h1>Connect a cluster</h1>
+          <label class="drop" :class="{ over: dropOver }" @dragover.prevent="dropOver = true" @dragleave="dropOver = false" @drop.prevent="onDrop($event)">
+            <div style="font-size:14px;margin-bottom:6px">Drop your kubeconfig file here</div>
+            <div class="small muted" style="margin-bottom:14px">Kept in memory for this session unless you tick Remember. Max 1 MB.</div>
+            <span class="btn primary" style="display:inline-flex;background:var(--accent);color:var(--on-accent);border-color:var(--accent)">Choose file…</span>
+            <input type="file" hidden @change="onDrop($event)">
+          </label>
+          <label class="row small"><input type="checkbox" x-model="remember" style="height:auto">
+            Remember this file (saved to ~/.kubelite with owner-only permissions)</label>
+          <div x-show="contexts.length">
+            <div class="nav-group" style="padding-left:0">Available clusters</div>
+            <template x-for="c in contexts" :key="c.id">
+              <div class="ctx-item" @click="selectContext(c.id, 'overview')">
+                <span class="dot" :class="c.id === ctx ? 'tone-ok' : 'tone-muted'"></span>
+                <div class="grow">
+                  <div x-text="c.name"></div>
+                  <div class="small muted truncate" x-text="c.sourceLabel"></div>
+                </div>
+                <span class="small muted" x-text="c.id === ctx ? 'current' : 'Connect →'"></span>
+                <button class="ghost icon" x-show="c.removable" title="Forget this kubeconfig" @click.stop="removeSource(c.source)">✕</button>
+              </div>
+            </template>
+          </div>
+          <p class="small muted">Cloud clusters (EKS, GKE, AKS) need their login helper installed on this machine, e.g.
+            <code>aws</code>, <code>gke-gcloud-auth-plugin</code> or <code>kubelogin</code>.</p>
+        </div>
+      </section>
+
+      <!-- ============================== overview ============================== -->
+      <section class="ov" x-show="view === 'overview'">
+        <template x-if="ov">
+          <div style="display:flex;flex-direction:column;gap:20px">
+            <div class="tiles">
+              <div class="tile"><div class="small muted">Pods</div><div class="v" x-text="ov.pods.total"></div>
+                <div class="small" x-text="`${ov.pods.running} running · ${ov.pods.byTone.warn || 0} pending · ${ov.pods.byTone.bad || 0} failing`"></div></div>
+              <div class="tile"><div class="small muted">Deployments</div>
+                <div class="v" :class="{ 'tone-warn': ov.deployments.degraded.length }" x-text="ov.deployments.total"></div>
+                <div class="small" x-text="ov.deployments.degraded.length ? `${ov.deployments.degraded.length} not fully ready` : 'all ready'"></div></div>
+              <div class="tile"><div class="small muted">Container restarts</div>
+                <div class="v" :class="{ 'tone-bad': ov.restarts > 0 }" x-text="ov.restarts"></div><div class="small muted">since pods started</div></div>
+              <div class="tile"><div class="small muted">Warning events</div>
+                <div class="v" :class="{ 'tone-warn': ov.warnings.length }" x-text="ov.warnings.length"></div><div class="small muted">most recent 15</div></div>
+            </div>
+            <div x-show="ov.problems.length">
+              <h3>Needs attention</h3>
+              <template x-for="p in ov.problems" :key="p.uid">
+                <div class="item" @click="go('pods'); open('pods', p)">
+                  <span class="dot" :class="'tone-' + p.tone"></span>
+                  <span class="mono small grow truncate" x-text="(ns === '_all' ? p.namespace + '/' : '') + p.name"></span>
+                  <span class="small" :class="'tone-' + p.tone" x-text="p.status"></span>
+                  <span class="small muted" x-text="`${p.cells[1]} restarts`"></span>
+                  <a class="small">View logs →</a>
+                </div>
+              </template>
+            </div>
+            <div x-show="ov.deployments.degraded.length">
+              <h3>Deployments not fully ready</h3>
+              <template x-for="d in ov.deployments.degraded" :key="d.uid">
+                <div class="item" @click="go('deployments'); open('deployments', d)">
+                  <span class="dot" :class="'tone-' + d.tone"></span>
+                  <span class="mono small grow" x-text="d.name"></span>
+                  <span class="small" x-text="d.status"></span>
+                </div>
+              </template>
+            </div>
+            <div x-show="ov.warnings.length">
+              <h3>Recent warnings</h3>
+              <template x-for="w in ov.warnings" :key="w.uid">
+                <article class="ov-warn-card">
+                  <div class="ov-warn-head">
+                    <span class="ov-warn-reason tone-bad" :title="w.cells[1]" x-text="w.cells[1]"></span>
+                    <time class="ov-warn-age muted" x-text="age(w.last)"></time>
+                  </div>
+                  <div class="mono ov-warn-obj" x-text="w.cells[2]"></div>
+                  <p class="ov-warn-msg muted" x-text="w.cells[3]"></p>
+                </article>
+              </template>
+            </div>
+            <div class="empty" x-show="!ov.problems.length && !ov.warnings.length && !ov.deployments.degraded.length">
+              Everything in this namespace looks healthy.</div>
+          </div>
+        </template>
+      </section>
+
+      <!-- ============================== resource table ============================== -->
+      <section class="main" x-show="isKind">
+        <div class="toolbar">
+          <h2 x-text="LABELS[view]"></h2>
+          <span class="muted small" x-text="loading ? 'loading…' : visibleRows.length + (visibleRows.length !== rows.length ? ' of ' + rows.length : '')"></span>
+          <input x-ref="filter" x-model="filter" placeholder="Filter…  ( / )" style="width:200px">
+          <template x-if="view === 'pods'">
+            <div class="row">
+              <template x-for="s in ['All', 'Running', 'Pending', 'Failing']">
+                <button class="chip" :class="{ on: statusFilter === s }" @click="statusFilter = s" x-text="s"></button>
+              </template>
+            </div>
+          </template>
+          <span class="grow"></span>
+          <template x-if="workspaceAddMode">
+            <div class="row wrap workspace-add-bar">
+              <span class="chip on">Adding to log workspace</span>
+              <button type="button" class="primary" :disabled="!picked.length" @click="commitWorkspaceAdds()"
+                      x-text="picked.length ? `Add ${picked.length} pane${picked.length > 1 ? 's' : ''}` : 'Select pods below'"></button>
+              <button type="button" @click="cancelWorkspaceAdd()">Cancel</button>
+            </div>
+          </template>
+          <button class="primary" x-show="view === 'pods' && picked.length && !workspaceAddMode" @click="addToWorkspace(picked, false)"
+                  x-text="`Open ${picked.length} in log workspace`"></button>
+          <span class="small muted">Export</span>
+          <button @click="exportRows('csv')">CSV</button>
+          <button @click="exportRows('json')">JSON</button>
+          <button @click="window.print()" title="Print or save as PDF">PDF</button>
+        </div>
+        <div class="scroll">
+          <table class="grid">
+            <thead><tr>
+              <th x-show="view === 'pods'" style="width:20px"></th>
+              <th @click="sortBy('name')">Name</th>
+              <th x-show="showNsCol" @click="sortBy('namespace')">Namespace</th>
+              <th x-show="showStatus" @click="sortBy('status')">Status</th>
+              <template x-for="(c, i) in columns" :key="c"><th @click="sortBy(i)" x-text="c"></th></template>
+              <th @click="sortBy(view === 'events' ? 'last' : 'age')" x-text="view === 'events' ? 'Last seen' : 'Age'"></th>
+            </tr></thead>
+            <tbody>
+              <template x-for="r in visibleRows" :key="r.uid">
+                <tr :class="{ sel: sel && sel.row.uid === r.uid }" @click="view === 'events' ? null : open(view, r)">
+                  <td x-show="view === 'pods'" @click.stop="togglePick(r)" title="Select to view logs side by side"><span class="check" :class="{ on: isPicked(r) }"></span></td>
+                  <td class="mono" style="font-size:12px" x-text="r.name"></td>
+                  <td x-show="showNsCol" x-text="r.namespace"></td>
+                  <td x-show="showStatus"><span class="status" :class="'tone-' + r.tone"><span class="dot"></span><span x-text="r.status"></span></span></td>
+                  <template x-for="(cell, i) in r.cells"><td :title="String(cell)" x-text="cell"
+                    :class="{ 'tone-bad': view === 'pods' && i === 1 && cell > 5 }"></td></template>
+                  <td class="muted" x-text="age(view === 'events' ? r.last : r.created)"></td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+          <div class="empty" x-show="!loading && !visibleRows.length" x-text="rows.length ? 'Nothing matches the filter.' : 'No ' + (LABELS[view] || '').toLowerCase() + ' here.'"></div>
+        </div>
+      </section>
+
+      <!-- ============================== log workspace ============================== -->
+      <section class="main" x-show="view === 'workspace'">
+        <div class="toolbar">
+          <h2>Log workspace</h2>
+          <span class="small muted" x-text="L.panes.length ? `${L.panes.length} pod${L.panes.length > 1 ? 's' : ''}` : ''"></span>
+          <span class="grow"></span>
+          <button @click="beginWorkspaceAdd()">+ Add pods</button>
+          <button x-show="L.panes.length" @click="L.panes = []; stopLogs(); renderLogs()">Clear</button>
+        </div>
+        <div class="empty" x-show="!L.panes.length">
+          Use <b>+ Add pods</b> to pick pods from the list, or open a Deployment / Job and click <b>Logs</b> to add its pods.
+        </div>
+        <div id="workspace-slot" class="grow" style="min-height:0;display:flex;flex-direction:column" x-show="L.panes.length"></div>
+      </section>
+    </main>
+
+    <!-- ============================== drawer ============================== -->
+    <aside class="drawer" :class="{ wide: wide && !drawerWidthPx && drawerDock === 'right', 'drawer-bottom': drawerDock === 'bottom' }" :style="drawerStyle()" x-show="sel" x-cloak>
+      <div class="drawer-resizer" title="Drag to resize" @mousedown.prevent="beginDrawerResize($event)"></div>
+      <div class="drawer-head">
+        <div class="banner tone-bad" x-show="detailError" x-text="detailError" style="margin-bottom:8px"></div>
+        <div class="edit-hint" x-show="sel && !readOnly && !editMode">
+          Viewing only — <button type="button" class="link" @click="promptEnableEdit()">enable edit mode</button> to change, delete, shell, or port-forward.
+        </div>
+        <div class="row">
+          <span class="dot" :class="'tone-' + (sel?.row.tone || 'muted')"></span>
+          <span class="mono grow truncate" style="font-size:12px" :title="sel?.row.name" x-text="sel?.row.name"></span>
+          <span class="small" :class="'tone-' + (sel?.row.tone || 'muted')" x-text="sel?.row.status"></span>
+          <button class="ghost icon" @click="toggleDrawerDock()" :title="drawerDock === 'right' ? 'Dock panel to bottom' : 'Dock panel to right'" x-text="drawerDock === 'right' ? '⬇' : '⮕'"></button>
+          <button class="ghost icon" x-show="drawerDock === 'right'" @click="wide = !wide" :title="wide ? 'Narrower' : 'Wider'" x-text="wide ? '⇥' : '⇤'"></button>
+          <button class="ghost icon" @click="closeDrawer()" title="Close (Esc)">✕</button>
+        </div>
+        <div class="row wrap" x-show="sel">
+          <template x-if="sel?.plural === 'pods'">
+            <div class="row wrap">
+              <button class="primary" :class="{ 'needs-edit': actionNeedsEdit('exec') }" :disabled="rbacBlocked('exec') || sel.row.status !== 'Running'" :title="actionHint('exec')" @click="setTab('shell')">Shell</button>
+              <button x-show="selCan.pf" :class="{ 'needs-edit': actionNeedsEdit('portforward') }" :disabled="rbacBlocked('portforward')" :title="actionHint('portforward')" @click="openPf()">Port-forward</button>
+              <button x-show="selCan.restartPod" :class="{ 'needs-edit': actionNeedsEdit('delete') }" :disabled="rbacBlocked('delete')" :title="actionHint('delete')" @click="doRestart()">Restart</button>
+              <button @click="addToWorkspace([sel.row], true)">+ Workspace</button>
+            </div>
+          </template>
+          <button x-show="selCan.logs" @click="logsForWorkload()">Logs</button>
+          <button x-show="selCan.restart" :class="{ 'needs-edit': actionNeedsEdit('patch') }" :disabled="rbacBlocked('patch')" :title="actionHint('patch')" @click="doRestart()">Restart</button>
+          <button x-show="selCan.pf && sel?.plural === 'services'" :class="{ 'needs-edit': actionNeedsEdit('portforward') }" :disabled="rbacBlocked('portforward')" :title="actionHint('portforward')" @click="openPf()">Port-forward</button>
+          <template x-if="selCan.cron">
+            <div class="row">
+              <button :class="{ 'needs-edit': actionNeedsEdit('patch') }" :disabled="rbacBlocked('patch')" :title="actionHint('patch')" @click="doSuspend()" x-text="sel.row.suspended ? 'Resume' : 'Suspend'"></button>
+              <button :class="{ 'needs-edit': actionNeedsEdit('trigger') }" :disabled="rbacBlocked('trigger')" :title="actionHint('trigger')" @click="doTrigger()">Run now</button>
+            </div>
+          </template>
+          <button x-show="selCan.edit" :class="{ 'needs-edit': actionNeedsEdit('update') }" :disabled="rbacBlocked('update')" :title="actionHint('update')" @click="startEdit()">Edit YAML</button>
+          <button class="danger" x-show="selCan.delete" :class="{ 'needs-edit': actionNeedsEdit('delete') }" :disabled="rbacBlocked('delete')" :title="actionHint('delete')" @click="doDelete()">Delete</button>
+        </div>
+        <div class="row small" x-show="selCan.scale">
+          <span class="muted">Replicas</span>
+          <button class="icon" :disabled="selCan.hpa || rbacBlocked('patch')" @click="scaleTo = Math.max(0, Number(scaleTo) - 1)">−</button>
+          <input type="number" min="0" max="1000" x-model.number="scaleTo" :disabled="selCan.hpa || rbacBlocked('patch')" style="width:64px">
+          <button class="icon" :disabled="selCan.hpa || rbacBlocked('patch')" @click="scaleTo = Number(scaleTo) + 1">+</button>
+          <button :class="{ 'needs-edit': actionNeedsEdit('patch') }" :disabled="selCan.hpa || rbacBlocked('patch') || scaleTo === sel?.row.replicas" :title="actionHint('patch')" @click="doScale()">Apply</button>
+          <span class="muted" x-show="selCan.hpa">Managed by an autoscaler (HPA)</span>
+        </div>
+      </div>
+      <div class="tabs">
+        <template x-for="t in tabs" :key="t">
+          <div class="tab" :class="{ on: tab === t }" @click="setTab(t)" x-text="t === 'yaml' ? 'YAML' : t === 'map' ? 'Map' : t"></div>
+        </template>
+      </div>
+      <div class="grow" style="min-height:0;display:flex;flex-direction:column">
+        <!-- overview -->
+        <div class="scroll" style="padding:12px" x-show="tab === 'overview'">
+          <div class="kv">
+            <template x-for="[k, v] in overviewPairs()" :key="k">
+              <div style="display:contents"><div class="k" x-text="k"></div><div class="v mono" x-text="v"></div></div>
+            </template>
+          </div>
+          <div style="margin-top:14px" x-show="sel && Object.keys(sel.row.labels || {}).length">
+            <div class="small muted" style="margin-bottom:6px">Labels</div>
+            <template x-for="[k, v] in Object.entries(sel?.row.labels || {})"><span class="label mono" x-text="`${k}=${v}`"></span></template>
+          </div>
+          <div style="margin-top:14px" x-show="selCan.secret">
+            <div class="row small" style="margin-bottom:6px"><span class="muted">Values</span>
+              <button x-show="!revealed" @click="revealSecret()">Reveal</button>
+              <button x-show="revealed" @click="revealed = null">Hide</button></div>
+            <div class="kv" x-show="revealed">
+              <template x-for="[k, v] in Object.entries(revealed || {})" :key="k"><div style="display:contents"><div class="k mono" x-text="k"></div><div class="v mono" style="white-space:pre-wrap" x-text="v"></div></div></template>
+            </div>
+          </div>
+        </div>
+        <!-- resource map -->
+        <div class="scroll map-tree" x-show="tab === 'map'">
+          <div class="empty" x-show="graphLoading">Loading relationships…</div>
+          <template x-for="(line, i) in graphRows()" :key="i">
+            <div class="map-line">
+              <div class="map-section-title" x-show="line.type === 'section'" x-text="line.title"></div>
+              <button type="button" class="map-row" x-show="line.type === 'node'" :style="`padding-left:${12 + line.depth * 18}px`" @click="openFromMap(line.plural, line.row)">
+                <span class="map-kind" x-text="kindLabel(line.plural)"></span>
+                <span class="mono map-name" x-text="line.row.name"></span>
+                <span class="small" :class="'tone-' + (line.row.tone || 'muted')" x-show="line.row.status" x-text="line.row.status"></span>
+                <span class="small muted map-hint" x-show="line.hint" x-text="line.hint"></span>
+              </button>
+            </div>
+          </template>
+          <div class="empty" x-show="!graphLoading && !(graph?.sections || []).length">No related resources found for this object.</div>
+        </div>
+        <!-- logs (the shared log viewer is moved in here) -->
+        <div id="drawer-logs-slot" class="grow" style="min-height:0;display:flex;flex-direction:column" x-show="tab === 'logs'"></div>
+        <!-- shell -->
+        <div class="grow" style="min-height:0;display:flex;flex-direction:column" x-show="tab === 'shell'">
+          <div class="toolbar" x-show="sel?.row.containers?.length > 1">
+            <span class="small muted">Container</span>
+            <select @change="openTerminal($event.target.value)">
+              <template x-for="c in sel?.row.containers || []"><option :value="c" x-text="c"></option></template>
+            </select>
+          </div>
+          <div class="term grow" x-ref="term"></div>
+        </div>
+        <!-- yaml -->
+        <div class="yaml-panel grow" x-show="tab === 'yaml'">
+          <div class="toolbar">
+            <template x-if="!editing">
+              <div class="row">
+                <button x-show="selCan.edit" :class="{ 'needs-edit': actionNeedsEdit('update') }" :disabled="rbacBlocked('update')" :title="actionHint('update')" @click="startEdit()">Edit</button>
+                <button @click="copy(detail?.yaml || '')">Copy</button>
+                <button @click="dl(`${sel.row.name}.yaml`, detail?.yaml || '')">Download .yaml</button>
+              </div>
+            </template>
+            <template x-if="editing">
+              <div class="row">
+                <button class="primary" @click="applyYaml()">Apply</button>
+                <button @click="editing = false">Cancel</button>
+                <span class="small muted">Applies with a conflict check: if someone else changed it, nothing is overwritten.</span>
+              </div>
+            </template>
+          </div>
+          <div class="scroll yaml-scroll">
+            <div class="yaml-code">
+              <pre class="yaml-ln" aria-hidden="true" x-text="yamlLineGutter(yamlBodyText())"></pre>
+              <pre class="code yaml-view" x-show="!editing" x-text="yamlBodyText()"></pre>
+              <textarea class="code yaml-edit" x-show="editing" x-model="yamlDraft" spellcheck="false"></textarea>
+            </div>
+          </div>
+        </div>
+        <!-- events -->
+        <div class="scroll" x-show="tab === 'events'">
+          <template x-for="e in events" :key="e.uid">
+            <div style="padding:9px 12px;border-bottom:1px solid var(--stroke3)" class="small">
+              <span :class="'tone-' + e.tone" x-text="e.cells[1]"></span>
+              <span class="muted" x-text="` · ${e.cells[3]} · ${e.cells[4]}× · ${age(e.last)} ago`"></span>
+            </div>
+          </template>
+          <div class="empty" x-show="!events.length">No recent events. Kubernetes keeps events for about an hour.</div>
+        </div>
+        <!-- history -->
+        <div class="scroll" x-show="tab === 'history'">
+          <template x-for="h in history" :key="h.revision">
+            <div class="row" style="padding:10px 12px;border-bottom:1px solid var(--stroke3)">
+              <div class="grow">
+                <div><span x-text="`Revision ${h.revision}`"></span> <span class="small tone-ok" x-show="h.current">current</span></div>
+                <div class="small muted mono truncate" x-text="h.images.join(', ')"></div>
+                <div class="small muted" x-text="(h.changeCause ? h.changeCause + ' · ' : '') + age(h.created) + ' ago'"></div>
+              </div>
+              <button x-show="!h.current" :class="{ 'needs-edit': actionNeedsEdit('patch') }" :disabled="rbacBlocked('patch')" :title="actionHint('patch')" @click="doRollback(h.revision)">Roll back to this</button>
+            </div>
+          </template>
+          <div class="empty" x-show="!history.length">No rollout history yet.</div>
+        </div>
+      </div>
+    </aside>
+    </div>
+  </div>
+
+  <!-- ============================== status bar ============================== -->
+  <footer class="statusbar">
+    <span x-show="ctxInfo" x-text="'kubeconfig: ' + (ctxInfo?.sourceLabel || '')"></span>
+    <span x-show="ctxInfo" x-text="'context: ' + (ctxInfo?.name || '')"></span>
+    <span x-show="lastSync" x-text="'synced ' + age(new Date(lastSync).toISOString()) + ' ago'"></span>
+    <template x-for="f in forwards" :key="f.id">
+      <span class="row" style="gap:4px">
+        <a :href="f.url" target="_blank" rel="noopener noreferrer" x-text="`${f.url} → ${f.target}:${f.remotePort}`"></a>
+        <a href="#" title="Stop port-forward" @click.prevent="stopPf(f.id)">✕</a>
+      </span>
+    </template>
+    <span class="grow"></span>
+    <a href="#" @click.prevent="help = true">Press ? for shortcuts</a>
+    <span class="muted">·</span>
+    <span>Built by <a href="https://www.linkedin.com/in/shubham-saroj-devops-engineer/" target="_blank" rel="noopener noreferrer"><b>Shubham Saroj</b></a></span>
+    <span class="muted" x-text="'v' + version"></span>
+  </footer>
+</div>
+
+<!-- ============================== shared log viewer ============================== -->
+<div id="logviewer-home" hidden>
+  <section id="logviewer" class="logviewer" :class="{ full: L.full, single: L.panes.length === 1, 'wrap-on': L.wrap, 'ts-off': !L.showTs }">
+    <div class="log-tools">
+      <div class="seg">
+        <template x-for="[id, label] in RANGES"><button :class="{ on: L.range === id }" @click="setRange(id)" x-text="label"></button></template>
+      </div>
+      <input type="datetime-local" x-show="L.range === 'since'" x-model="L.sinceWhen" @change="connectLogs()" title="Show logs since this time (up to ~31 days back)">
+      <template x-if="L.panes.length === 1">
+        <select x-model="L.panes[0].container" @change="connectLogs()" aria-label="Container">
+          <option value="all" x-text="L.panes[0].containers.length > 1 ? 'All containers' : (L.panes[0].containers[0] || 'container')"></option>
+          <template x-for="c in (L.panes[0].containers.length > 1 ? L.panes[0].containers : [])"><option :value="c" x-text="c"></option></template>
+          <template x-for="c in L.panes[0].containers"><option :value="c + ':previous'" x-text="c + ' (previous crash)'"></option></template>
+        </select>
+      </template>
+      <template x-if="L.panes.length > 1">
+        <div class="seg">
+          <button :class="{ on: L.layout === 'cols' }" :disabled="L.panes.length > MAX_PANES" @click="setLayout('cols')">Side by side</button>
+          <button :class="{ on: L.layout === 'grid' }" :disabled="L.panes.length > MAX_PANES" @click="setLayout('grid')">Grid</button>
+          <button :class="{ on: L.layout === 'merged' }" @click="setLayout('merged')">Merged timeline</button>
+        </div>
+      </template>
+      <span class="grow"></span>
+      <button class="chip" :class="{ on: L.follow }" @click="setFollow(!L.follow)" x-text="L.follow ? 'Pause' : 'Resume'" :title="L.follow ? 'Pause live tail (Space)' : 'Resume live tail (Space)'"></button>
+      <button @click="toggleFullscreen()" x-text="L.full ? 'Exit full screen' : 'Full screen'" title="Shift+F"></button>
+    </div>
+    <div class="log-tools">
+      <div class="search" :class="{ invalid: L.reError }">
+        <input x-ref="logSearch" x-model="L.query" @input="onQuery()" @keydown.enter.prevent="nextHit($event.shiftKey ? -1 : 1)" placeholder="Search logs (Enter = next)">
+        <span class="small muted" style="padding:0 4px;white-space:nowrap" x-text="L.reError ? 'bad regex' : (L.query ? `${L.hitIdx >= 0 ? L.hitIdx + 1 : 0} / ${L.hits}` : '')"></span>
+        <button class="toggle" :class="{ on: L.caseS }" title="Match case" @click="L.caseS = !L.caseS; L.hitIdx = -1; L.onlyMatch ? renderLogs() : rehighlightLogs()">Aa</button>
+        <button class="toggle" :class="{ on: L.regex }" title="Regular expression" @click="L.regex = !L.regex; L.hitIdx = -1; L.onlyMatch ? renderLogs() : rehighlightLogs()">.*</button>
+      </div>
+      <template x-if="L.panes.length > 1 && L.layout !== 'merged'">
+        <div class="seg search-scope" title="Which panes to search">
+          <button type="button" :class="{ on: L.searchScope === 'all' }" @click="setSearchScope('all')">All</button>
+          <button type="button" :class="{ on: L.searchScope === 'active' }" @click="setSearchScope('active')">Active</button>
+          <button type="button" :class="{ on: L.searchScope === 'selected' }" @click="setSearchScope('selected')">Picked</button>
+        </div>
+      </template>
+      <button class="icon" title="Previous match (Shift+Enter)" @click="nextHit(-1)">↑</button>
+      <button class="icon" title="Next match (Enter)" @click="nextHit(1)">↓</button>
+      <button class="chip" :class="{ on: L.onlyMatch }" @click="L.onlyMatch = !L.onlyMatch; renderLogs()">Only matching</button>
+      <span class="sep"></span>
+      <template x-for="lv in LEVELS">
+        <button class="chip" :class="L.levels[lv] ? 'on lvl-' + lv : 'off'" @click="L.levels[lv] = !L.levels[lv]; renderLogs()" x-text="`${lv} ${L.counts[lv]}`"></button>
+      </template>
+    </div>
+    <div class="panes" :style="`grid-template-columns: ${gridCols}`">
+      <template x-for="pane in logPanes" :key="pane.key + ':' + L.layout + ':' + L.panes.length">
+        <div class="pane">
+          <div class="pane-head" x-show="L.panes.length > 1 && pane.key !== 'm'" @mousedown="focusLogPane(pane.key)">
+            <span class="swatch" :style="`background:${PANE_COLORS[pane.i % 4]}`"></span>
+            <span class="mono grow truncate" :title="pane.p?.pod" x-text="pane.p?.pod"></span>
+            <button type="button" class="chip small" x-show="L.panes.length > 1 && L.layout !== 'merged' && L.searchScope === 'selected'"
+                    :class="{ on: pane.p?.searchIn }" @click.stop="togglePaneSearch(pane.i)" title="Include this pane when search scope is Picked">Search</button>
+            <span class="small muted" x-show="L.query && paneSearchHitsVisible(pane.i)" x-text="`${L.paneHitLabels[pane.i] ?? 0} hits`"></span>
+            <button class="ghost icon" title="Close pane" @click="removePane(pane.i)">✕</button>
+          </div>
+          <div class="log-body" :data-pane="pane.key" @mousedown="focusLogPane(pane.key)" @wheel.passive="onLogWheel($event)"></div>
+        </div>
+      </template>
+    </div>
+    <div class="log-foot">
+      <span x-text="`${L.total.toLocaleString()} lines`"></span>
+      <span class="link" :class="{ on: L.wrap }" @click="L.wrap = !L.wrap">Wrap <span x-text="L.wrap ? 'on' : 'off'"></span></span>
+      <span class="link" :class="{ on: L.showTs }" @click="L.showTs = !L.showTs">Timestamps <span x-text="L.showTs ? 'on' : 'off'"></span></span>
+      <span class="grow"></span>
+      <a href="#" x-show="!L.follow" @click.prevent="setFollow(true)" x-text="L.waiting ? `${L.waiting} new lines · Resume live tail ↓` : 'Resume live tail ↓'"></a>
+      <button @click="copy(logText())">Copy</button>
+      <button @click="downloadLogs()">Download .log</button>
+    </div>
+  </section>
+</div>
+
+<!-- ============================== dialogs ============================== -->
+<div class="overlay confirm-overlay" x-show="confirm" @click.self="cancelConfirm()">
+  <form class="dialog confirm-dialog" role="dialog" aria-modal="true" :key="confirm?.token" @submit.prevent="runConfirm()">
+    <h3 x-text="confirm?.title"></h3>
+    <div class="small" x-show="confirm?.message" x-text="confirm?.message"></div>
+    <template x-if="confirm?.typeName">
+      <label class="small">Type <b class="mono" x-text="confirm.typeName"></b> to confirm
+        <input x-model="confirm.typed" style="width:100%;margin-top:6px" x-init="$nextTick(() => $el.focus())"></label>
+    </template>
+    <template x-if="sel?.plural === 'pods' && confirm?.confirmLabel === 'Delete'">
+      <label class="row small"><input type="checkbox" x-model="confirm.force" style="height:auto"> Force (for pods stuck in Terminating)</label>
+    </template>
+    <div class="row dialog-actions" style="justify-content:flex-end">
+      <button type="button" @click="cancelConfirm()">Cancel</button>
+      <button type="submit" class="primary" :class="{ danger: confirm?.danger }"
+              :disabled="confirmSubmitDisabled()" x-text="confirm?.busy ? 'Working…' : confirm?.confirmLabel"></button>
+    </div>
+  </form>
+</div>
+
+<template x-if="pf">
+  <div class="overlay" @click.self="pf = null">
+    <div class="dialog pf-dialog" role="dialog" aria-modal="true" style="width:500px">
+      <h3>Port forward to your computer</h3>
+      <p class="small muted" style="margin:0">
+        Opens a private tunnel from <span class="mono">127.0.0.1</span> on your laptop to
+        <span class="mono" x-text="`${pf.row.namespace}/${pf.row.name}`"></span>
+        (<span x-text="pf.plural === 'services' ? 'service' : 'pod'"></span>). Only your machine can use it.
+      </p>
+      <label class="small">① Port in the cluster
+        <div class="row" style="margin-top:6px">
+          <select x-show="pf.ports.length" x-model.number="pf.port" style="flex:1"><template x-for="p in pf.ports"><option :value="p.port" x-text="p.label"></option></template></select>
+          <input type="number" min="1" max="65535" x-model.number="pf.port" placeholder="e.g. 8080" style="width:100px">
+        </div></label>
+      <label class="small">② Port on your laptop (optional)
+        <input type="number" min="1024" max="65535" x-model="pf.localPort" placeholder="Auto-pick if empty" style="width:100%;margin-top:6px;display:block"></label>
+      <p class="small pf-preview" x-show="pf.port">
+        After you start, open <span class="mono" x-text="`http://127.0.0.1:${pf.localPort || '…'}`"></span> in your browser (link also appears in the footer).
+      </p>
+      <div class="row" style="justify-content:flex-end">
+        <button type="button" @click="pf = null">Cancel</button>
+        <button type="button" class="primary" :disabled="pf.busy" @click="startPf()" x-text="pf.busy ? 'Starting…' : 'Start port forward'"></button>
+      </div>
+    </div>
+  </div>
+</template>
+
+<template x-if="palette.open">
+  <div class="overlay" @click.self="palette.open = false">
+    <div class="dialog palette" role="dialog" aria-modal="true">
+      <input x-ref="paletteInput" x-model="palette.q" @input="palette.i = 0" placeholder="Type a resource, namespace, cluster or page…"
+             @keydown.down.prevent="palette.i = Math.min(palette.i + 1, paletteItems.length - 1)"
+             @keydown.up.prevent="palette.i = Math.max(palette.i - 1, 0)" @keydown.enter.prevent="runPalette()">
+      <div class="opts">
+        <template x-for="(item, i) in paletteItems" :key="item.hint + item.label + i">
+          <div class="opt" :class="{ on: i === palette.i }" @mouseenter="palette.i = i" @click="runPalette(item)">
+            <span class="grow truncate" x-text="item.label"></span><span class="small muted" x-text="item.hint"></span>
+          </div>
+        </template>
+        <div class="empty" x-show="!paletteItems.length">No matches</div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<template x-if="help">
+  <div class="overlay" @click.self="help = false">
+    <div class="dialog" role="dialog" aria-modal="true" style="width:520px">
+      <h3>Keyboard shortcuts</h3>
+      <div class="kv">
+        <div class="k">⌘K / Ctrl+K</div><div class="v">Jump to any page, resource, namespace or cluster</div>
+        <div class="k">/</div><div class="v">Focus the filter (or the log search when logs are open)</div>
+        <div class="k">g then o · p · d · s · e · w · n</div><div class="v">Overview · Pods · Deployments · Services · Events · Workspace · Nodes</div>
+        <div class="k">o · l · y · s · e</div><div class="v">Overview · Logs · YAML · Shell · Events tab of the open item</div>
+        <div class="k">⌘F / Ctrl+F</div><div class="v">Search logs (when logs are open)</div>
+        <div class="k">Enter · Shift+Enter</div><div class="v">Next · previous log match</div>
+        <div class="k">Space</div><div class="v">Pause or resume log follow</div>
+        <div class="k">Shift+F</div><div class="v">Logs full screen</div>
+        <div class="k">Esc</div><div class="v">Close dialog, then the side panel</div>
+      </div>
+      <div class="row" style="justify-content:flex-end"><button @click="help = false">Close</button></div>
+    </div>
+  </div>
+</template>
+
+<div class="toasts">
+  <template x-for="t in toasts" :key="t.id"><div class="toast" :class="t.kind" x-text="t.msg"></div></template>
+</div>
+</div>
+</body>
+</html>

@@ -1,0 +1,9 @@
+flask>=3.0
+flask-sock>=0.7
+gevent>=24.2
+kubernetes>=37.0
+pyyaml>=6.0
+
+[dev]
+pytest>=8
+ruff>=0.6

@@ -1,0 +1,59 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: demo-scripts
+  namespace: kubelite-demo
+data:
+  # Emits realistic log lines. Env: SERVICE (name in each line), BURST (lines per second).
+  # ERROR lines go to stderr so stdout/stderr filtering can be tested.
+  loggen.sh: |
+    #!/bin/sh
+    i=0
+    while true; do
+      n=0
+      while [ "$n" -lt "${BURST:-1}" ]; do
+        i=$((i + 1)); n=$((n + 1))
+        ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+        case $((i % 20)) in
+          0) echo "$ts ERROR ${SERVICE} upstream timeout after 5000ms request_id=$i" >&2 ;;
+          7|14) echo "$ts WARN  ${SERVICE} slow upstream took $((i % 900 + 100))ms" ;;
+          3) echo "$ts DEBUG ${SERVICE} cache hit ratio 0.93" ;;
+          *) echo "$ts INFO  ${SERVICE} GET /api/items/$i 200 $((i % 40 + 1))ms" ;;
+        esac
+      done
+      sleep 1
+    done
+  # Starts, retries a database that does not exist, then exits 1 -> CrashLoopBackOff.
+  crash.sh: |
+    #!/bin/sh
+    ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+    echo "$(ts) INFO  starting payments service v2.4.1"
+    echo "$(ts) INFO  connecting to postgres at db.kubelite-demo.svc:5432"
+    sleep 2
+    echo "$(ts) WARN  postgres connection attempt 1 failed, retrying in 2s"
+    sleep 2
+    echo "$(ts) WARN  postgres connection attempt 2 failed, retrying in 4s"
+    sleep 4
+    echo "$(ts) ERROR dial tcp db.kubelite-demo.svc:5432: connect: connection refused" >&2
+    echo "$(ts) ERROR fatal: could not initialise datastore" >&2
+    exit 1
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: web-config
+  namespace: kubelite-demo
+data:
+  LOG_LEVEL: info
+  FEATURE_CHECKOUT_V2: "true"
+---
+# Demo-only placeholder values, used to test that KubeLite masks Secret data. Not real credentials.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: payments-db
+  namespace: kubelite-demo
+type: Opaque
+stringData:
+  DB_USER: demo-user
+  DB_PASSWORD: not-a-real-password

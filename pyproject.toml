@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kubelite"
+# Keep in sync with kubelite/__init__.py __version__ at release time only.
+version = "1.0.0"
+description = "A lightweight, browser-based Kubernetes dashboard. Run it locally, open localhost, drop in a kubeconfig."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Shubham Saroj" }]
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = ["kubernetes", "k8s", "dashboard", "logs", "devops"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "Environment :: Web Environment",
+    "Topic :: System :: Systems Administration",
+]
+dependencies = [
+    "flask>=3.0",
+    "flask-sock>=0.7",
+    "gevent>=24.2",
+    "kubernetes>=37.0",
+    "pyyaml>=6.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/shubhamsaroj/kubeLite"
+Repository = "https://github.com/shubhamsaroj/kubeLite"
+Issues = "https://github.com/shubhamsaroj/kubeLite/issues"
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[project.scripts]
+kubelite = "kubelite.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["kubelite*"]
+
+[tool.setuptools.package-data]
+kubelite = ["templates/*.html", "static/*", "static/vendor/*"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = ["E501"]  # the formatter owns line length
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

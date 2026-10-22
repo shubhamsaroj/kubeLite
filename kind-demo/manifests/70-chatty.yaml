@@ -1,0 +1,34 @@
+# ~200 log lines per second: stress-tests live streaming, search and the browser line cap.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chatty
+  namespace: kubelite-demo
+  labels:
+    app: chatty
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: chatty
+  template:
+    metadata:
+      labels:
+        app: chatty
+    spec:
+      containers:
+        - name: app
+          image: busybox:1.37
+          command: ["sh", "/scripts/loggen.sh"]
+          env:
+            - { name: SERVICE, value: chatty }
+            - { name: BURST, value: "200" }
+          volumeMounts:
+            - { name: scripts, mountPath: /scripts }
+          resources:
+            requests: { cpu: 10m, memory: 8Mi }
+            limits: { cpu: 200m, memory: 32Mi }
+      volumes:
+        - name: scripts
+          configMap:
+            name: demo-scripts
