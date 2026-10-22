@@ -10,14 +10,18 @@ Python **3.10+** on macOS, Linux, or Windows.
 
 ## Quick start
 
+**Python 3.10+** required. Check with `python3 --version` (Windows: `py --version`).
+
+Install from the [v1.0.0 release](https://github.com/shubhamsaroj/kubeLite/releases/tag/v1.0.0) wheel (no repo clone):
+
 ```bash
-git clone https://github.com/shubhamsaroj/kubeLite.git
-cd kubeLite
-pipx install .    # recommended — see Install section for venv / pip
+python3 -m pip install https://github.com/shubhamsaroj/kubeLite/releases/download/v1.0.0/kubelite-1.0.0-py3-none-any.whl
 kubelite
 ```
 
-Open **http://localhost:7462** (or the URL in the terminal). `Ctrl+C` to stop.
+Open **http://localhost:7462** (or the URL printed in the terminal). Press `Ctrl+C` to stop.
+
+If `kubelite` is not found, run `python3 -m kubelite` instead. Other install options (pipx, venv, from source) are in [Install](#install).
 
 ### First minute
 
@@ -56,32 +60,62 @@ Turn on **Edit mode** (with confirmation) to scale, delete, apply YAML, open a *
 
 ## Install
 
-Check Python: `python3 --version` (Windows: `py --version`).
+Pick one path below. You need **Python 3.10+** and a working `pip`.
 
-### From GitHub Release (no clone)
+| Path | Best for |
+| --- | --- |
+| [Release wheel](#install-from-github-release) | Most users — install and run, no clone |
+| [pipx + release wheel](#install-with-pipx) | Isolated app on your PATH |
+| [Clone + pip / venv](#install-from-a-cloned-repo) | Hacking on KubeLite locally |
+| [Editable dev install](#development-install) | Running tests and contributing |
 
-Install the wheel from the [latest release](https://github.com/shubhamsaroj/kubeLite/releases/latest) (Python 3.10+):
+### Install from GitHub Release
+
+1. Open [Releases](https://github.com/shubhamsaroj/kubeLite/releases/latest) and note the version tag (e.g. `v1.0.0`) and wheel name (e.g. `kubelite-1.0.0-py3-none-any.whl`).
+2. Install the wheel (current stable):
 
 ```bash
 python3 -m pip install https://github.com/shubhamsaroj/kubeLite/releases/download/v1.0.0/kubelite-1.0.0-py3-none-any.whl
+```
+
+3. Start the app:
+
+```bash
 kubelite
 ```
 
-If `kubelite` is not on your PATH, run `python3 -m kubelite` instead. Upgrade: install again with the URL for the newer release tag.
+Use `python3 -m kubelite` if the `kubelite` command is not on your PATH.
 
-### pipx (recommended)
+**Upgrade:** repeat step 2 with the wheel URL from the newer release (same tag and filename pattern: `.../download/vX.Y.Z/kubelite-X.Y.Z-py3-none-any.whl`).
 
-[pipx](https://pipx.pypa.io/) installs KubeLite in an isolated environment and adds `kubelite` to your PATH.
+### Install with pipx
+
+[pipx](https://pipx.pypa.io/) keeps KubeLite in its own environment and puts `kubelite` on your PATH.
 
 ```bash
-pipx install .    # from the cloned repo
+pipx install https://github.com/shubhamsaroj/kubeLite/releases/download/v1.0.0/kubelite-1.0.0-py3-none-any.whl
+kubelite
 ```
 
-After pulling changes: `pipx reinstall .` from the repo (or `pipx upgrade kubelite` if you installed from a published package).
+**Upgrade:** `pipx upgrade kubelite` or reinstall with the newer release wheel URL.
 
-### Virtual environment
+### Install from a cloned repo
 
-**macOS / Linux**
+```bash
+git clone https://github.com/shubhamsaroj/kubeLite.git
+cd kubeLite
+```
+
+**pipx (from the repo directory)**
+
+```bash
+pipx install .
+kubelite
+```
+
+After you `git pull`: `pipx reinstall .`
+
+**Virtual environment — macOS / Linux**
 
 ```bash
 python3 -m venv .venv
@@ -90,7 +124,7 @@ pip install .
 kubelite
 ```
 
-**Windows (PowerShell)**
+**Virtual environment — Windows (PowerShell)**
 
 ```powershell
 py -m venv .venv
@@ -99,9 +133,11 @@ pip install .
 kubelite
 ```
 
-After UI or code changes in a venv: `pip install .`
+After you change the code in a venv: `pip install .`
 
-### Development (no install)
+### Development install
+
+From a clone of the repo:
 
 ```bash
 pip install -e ".[dev]"
@@ -156,7 +192,7 @@ kubelite --kubeconfig ~/.kube/kubelite-dev.yaml
 | Port in use | Another port is chosen automatically, or set `--port`. |
 | Cloud cluster won’t connect | `kubectl get ns` with the same kubeconfig; refresh cloud login / auth plugin. |
 | Logs stall on kind/minikube (“inotify watchers”) | Watch limits on the node VM; KubeLite falls back to polling. On the node: `sudo sysctl fs.inotify.max_user_instances=512 fs.inotify.max_user_watches=524288` |
-| Blank or stale UI | Hard refresh (`Cmd+Shift+R` / `Ctrl+Shift+R`). Stick to one host (`localhost` or `127.0.0.1`). Reinstall: `pip install .` or `pipx reinstall .`. Check the browser console (F12). |
+| Blank or stale UI | Hard refresh (`Cmd+Shift+R` / `Ctrl+Shift+R`). Stick to one host (`localhost` or `127.0.0.1`). Reinstall from the [release wheel](#install-from-github-release) or `pipx reinstall kubelite`. Check the browser console (F12). |
 
 ## Development
 
