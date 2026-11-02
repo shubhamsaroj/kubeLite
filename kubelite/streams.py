@@ -4,16 +4,21 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import secrets
+import signal
 import socket
+import struct
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import gevent
 from gevent.queue import Empty, Queue
 from gevent.server import StreamServer
+from gevent.socket import wait_read
 from kubernetes import client
 from kubernetes.stream import portforward, stream
 
@@ -297,6 +302,130 @@ def _short_error(exc: Exception) -> str:
         except (ValueError, AttributeError):
             pass
     return str(exc).splitlines()[0][:300]
+
+
+def local_shell_bridge(
+    ws: Any,
+    kubeconfig: Path,
+    context: str,
+    namespace: str | None = None,
+    cleanup: Path | None = None,
+) -> None:
+    """Attach a browser terminal to a local interactive shell with ``KUBECONFIG`` set for kubectl."""
+    if os.name == "nt":
+        ws.send("\r\n\x1b[31mLocal shell needs macOS or Linux (no Windows PTY support yet).\x1b[0m\r\n")
+        return
+    import fcntl
+    import pty
+    import subprocess
+    import termios
+
+    shell = os.environ.get("SHELL") or ("/bin/zsh" if os.path.exists("/bin/zsh") else "/bin/bash")
+    env = os.environ.copy()
+    env["KUBECONFIG"] = str(kubeconfig)
+    env["KUBELITE_CONTEXT"] = context
+    if namespace:
+        env["KUBELITE_NAMESPACE"] = namespace
+    env["KUBELITE_SHELL"] = "1"
+
+    try:
+        master, slave = pty.openpty()
+    except OSError as exc:
+        ws.send(f"\r\n\x1b[31mCould not open a local shell: {exc}\x1b[0m\r\n")
+        if cleanup:
+            cleanup.unlink(missing_ok=True)
+        return
+
+    try:
+        proc = subprocess.Popen(  # noqa: S603 — fixed shell binary, env only
+            [shell, "-i"],
+            stdin=slave,
+            stdout=slave,
+            stderr=slave,
+            env=env,
+            cwd=str(Path.home()),
+            start_new_session=True,
+            close_fds=True,
+        )
+    except OSError as exc:
+        os.close(master)
+        os.close(slave)
+        ws.send(f"\r\n\x1b[31mCould not start {shell}: {exc}\x1b[0m\r\n")
+        if cleanup:
+            cleanup.unlink(missing_ok=True)
+        return
+    os.close(slave)
+
+    flags = fcntl.fcntl(master, fcntl.F_GETFL)
+    fcntl.fcntl(master, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+
+    def set_winsize(cols: int, rows: int) -> None:
+        try:
+            packed = struct.pack("HHHH", max(rows, 1), max(cols, 1), 0, 0)
+            fcntl.ioctl(master, termios.TIOCSWINSZ, packed)
+            os.kill(proc.pid, signal.SIGWINCH)
+        except OSError:
+            pass
+
+    ns_note = f"  ns={namespace}" if namespace else ""
+    try:
+        ws.send(
+            f"\r\n\x1b[36mKubeLite local shell\x1b[0m  context=\x1b[1m{context}\x1b[0m{ns_note}\r\n"
+            f"KUBECONFIG={kubeconfig}\r\n"
+            f"Try kubectl commands\r\n\r\n"
+        )
+    except Exception:
+        pass
+
+    def pump_output() -> None:
+        try:
+            while True:
+                wait_read(master)
+                try:
+                    data = os.read(master, 8192)
+                except BlockingIOError:
+                    continue
+                if not data:
+                    break
+                ws.send(data.decode("utf-8", errors="replace"))
+        except Exception:
+            pass
+        finally:
+            try:
+                ws.send("\r\n\x1b[90m[local shell ended]\x1b[0m\r\n")
+            except Exception:
+                pass
+            ws.close()
+
+    pump = gevent.spawn(pump_output)
+    try:
+        while True:
+            raw = ws.receive()
+            if raw is None:
+                break
+            msg = json.loads(raw)
+            if msg.get("type") == "input":
+                os.write(master, msg.get("data", "").encode("utf-8", errors="replace"))
+            elif msg.get("type") == "resize":
+                set_winsize(int(msg.get("cols", 80)), int(msg.get("rows", 24)))
+    except Exception:
+        pass
+    finally:
+        pump.kill(block=False)
+        try:
+            os.close(master)
+        except OSError:
+            pass
+        try:
+            proc.send_signal(signal.SIGHUP)
+            proc.wait(timeout=2)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        if cleanup:
+            cleanup.unlink(missing_ok=True)
 
 
 # --------------------------------------------------------------------------------------------------------------------

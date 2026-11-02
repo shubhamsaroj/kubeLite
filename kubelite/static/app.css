@@ -309,6 +309,31 @@ textarea.code.yaml-edit { display: block; height: auto; }
 pre.code { margin: 0; padding: 10px 12px; font-size: 12px; line-height: 1.5; background: var(--sunken); min-height: 100%; white-space: pre; tab-size: 2; }
 textarea.code { width: 100%; height: 100%; min-height: 100%; border: 0; border-radius: 0; background: var(--sunken); resize: none; font-size: 12px; line-height: 1.5; white-space: pre; }
 .term { height: 100%; padding: 6px; background: var(--sunken); }
+.local-shell-btn {
+  height: 28px; padding: 0 10px; font-size: 12px; font-weight: 500;
+  background: var(--fill2); border-color: var(--stroke2);
+}
+.local-shell-btn:hover, .local-shell-btn.on {
+  background: var(--accent); border-color: var(--accent); color: var(--on-accent);
+}
+.local-shell-btn.dim {
+  background: color-mix(in srgb, var(--accent) 18%, var(--fill2));
+  border-color: var(--accent); color: var(--fg);
+}
+.local-shell-panel {
+  position: fixed; left: 0; right: 0; bottom: 26px; z-index: 25;
+  height: min(42vh, 420px); display: flex; flex-direction: column;
+  border-top: 1px solid var(--stroke2); background: var(--bg);
+  box-shadow: 0 -8px 28px color-mix(in srgb, var(--fg) 12%, transparent);
+}
+.local-shell-term { flex: 1; min-height: 0; }
+.local-shell-pill {
+  position: fixed; right: 16px; bottom: 34px; z-index: 26;
+  height: 30px; padding: 0 12px; font-size: 12px; font-weight: 500;
+  border-radius: 999px; border: 1px solid var(--stroke2);
+  background: var(--chrome); color: var(--fg); box-shadow: var(--shadow-md);
+}
+.local-shell-pill:hover { border-color: var(--accent); color: var(--accent); }
 
 /* ---------- logs ---------- */
 .logviewer { display: flex; flex-direction: column; height: 100%; min-height: 0; background: var(--bg); }

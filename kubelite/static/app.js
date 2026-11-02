@@ -157,7 +157,8 @@ function fillMessageEl(m, text, highlight, search) {
   if (last < text.length) m.append(text.slice(last));
   re.lastIndex = 0;
 }
-let term = null; // { term, fit, ws, observer }
+let term = null; // pod exec: { term, fit, ws, observer }
+let localTerm = null; // host shell: { term, fit, ws, observer }
 let watchSource = null;
 const confirmRuns = new Map();
 let confirmTokenSeq = 0;
@@ -178,6 +179,7 @@ Alpine.data("kubelite", () => ({
   // drawer
   sel: null, tab: "overview", detail: null, detailError: "", events: [], describe: null, describeLoading: false, describeError: "",
   perms: {}, permsLoading: false, editing: false, yamlDraft: "", revealed: null, shellContainer: null,
+  localShell: { open: false, minimized: false },
   _lastWatchErr: "",
   history: [], graph: null, graphLoading: false, scaleTo: 0, wide: false,
   drawerDock: localStorage.getItem("kubelite.drawerDock") === "bottom" ? "bottom" : "right",
@@ -252,6 +254,7 @@ Alpine.data("kubelite", () => ({
     const dark = this.theme === "dark" || (this.theme === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
     document.documentElement.dataset.theme = dark ? "dark" : "light";
     if (term) term.term.options.theme = this.termTheme();
+    if (localTerm) localTerm.term.options.theme = this.termTheme();
   },
   dismissToast(id) {
     this.toasts = this.toasts.filter((x) => x.id !== id);
@@ -327,6 +330,8 @@ Alpine.data("kubelite", () => ({
 
   // ------------------------------------------------------------------ contexts & namespaces
   async selectContext(id, view) {
+    const shellWasOpen = this.localShell.open;
+    this.closeLocalShell();
     this.ctx = id;
     localStorage.setItem("kubelite.ctx", id);
     this.closeDrawer();
@@ -344,6 +349,7 @@ Alpine.data("kubelite", () => ({
     const savedNs = localStorage.getItem(`kubelite.ns.${id}`);
     this.ns = savedNs || info?.namespace || "default";
     this.go(view || (this.view === "connect" ? "overview" : this.view));
+    if (shellWasOpen) this.openLocalShell();
   },
   setNs(ns) {
     this.ns = ns;
@@ -351,6 +357,7 @@ Alpine.data("kubelite", () => ({
     this.picked = [];
     this.closeDrawer();
     this.go(this.view);
+    if (this.localShell.open) this.openLocalShell(); // refresh KUBECONFIG namespace
   },
   async onDrop(ev) {
     this.dropOver = false;
@@ -1009,6 +1016,74 @@ Alpine.data("kubelite", () => ({
     term.ws.close();
     term.term.dispose();
     term = null;
+  },
+
+  // ------------------------------------------------------------------ local host shell (kubectl)
+  toggleLocalShell() {
+    if (!this.localShell.open) return this.openLocalShell();
+    if (this.localShell.minimized) return this.restoreLocalShell();
+    this.minimizeLocalShell();
+  },
+  openLocalShell() {
+    if (!this.ctx) return this.toast("Select a cluster first", "err");
+    if (this.localShell.open && localTerm) {
+      this.localShell.minimized = false;
+      this.$nextTick(() => this._refitLocalShell());
+      return;
+    }
+    this.closeLocalShell();
+    this.localShell = { open: true, minimized: false };
+    this.$nextTick(() => this._attachLocalShell());
+  },
+  minimizeLocalShell() {
+    if (!this.localShell.open) return;
+    this.localShell.minimized = true;
+  },
+  restoreLocalShell() {
+    if (!this.localShell.open) return this.openLocalShell();
+    this.localShell.minimized = false;
+    this.$nextTick(() => this._refitLocalShell());
+  },
+  _refitLocalShell() {
+    if (!localTerm) return;
+    try { localTerm.fit.fit(); } catch {}
+    if (localTerm.ws.readyState === 1) {
+      localTerm.ws.send(JSON.stringify({ type: "resize", cols: localTerm.term.cols, rows: localTerm.term.rows }));
+    }
+    localTerm.term.focus();
+  },
+  _attachLocalShell() {
+    const el = this.$refs.localTerm;
+    if (!el || !this.localShell.open) return;
+    el.replaceChildren();
+    const t = new window.Terminal({ cursorBlink: true, fontSize: 12, fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace", theme: this.termTheme() });
+    const fit = new window.FitAddon.FitAddon();
+    t.loadAddon(fit);
+    t.open(el);
+    fit.fit();
+    const qs = new URLSearchParams({ ctx: this.ctx, ns: this.ns || "_all" });
+    const session = sessionStorage.getItem("kubelite.session");
+    if (session) qs.set("session", session);
+    const ws = new WebSocket(`ws://${location.host}/ws/local-shell?${qs}`);
+    const resize = () => {
+      try { fit.fit(); } catch {}
+      if (ws.readyState === 1) ws.send(JSON.stringify({ type: "resize", cols: t.cols, rows: t.rows }));
+    };
+    ws.onopen = () => { resize(); t.focus(); };
+    ws.onmessage = (e) => t.write(typeof e.data === "string" ? e.data : new Uint8Array(e.data));
+    ws.onclose = () => t.write("\r\n\x1b[90m[disconnected]\x1b[0m\r\n");
+    t.onData((d) => ws.readyState === 1 && ws.send(JSON.stringify({ type: "input", data: d })));
+    const observer = new ResizeObserver(resize);
+    observer.observe(el);
+    localTerm = { term: t, fit, ws, observer };
+  },
+  closeLocalShell() {
+    this.localShell = { open: false, minimized: false };
+    if (!localTerm) return;
+    localTerm.observer.disconnect();
+    try { localTerm.ws.close(); } catch {}
+    localTerm.term.dispose();
+    localTerm = null;
   },
 
   // ------------------------------------------------------------------ logs: session & stream

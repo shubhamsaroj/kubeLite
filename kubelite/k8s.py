@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -271,6 +272,58 @@ class ClusterManager:
         api = client.ApiClient(cfg)
         self._clients[(source_id, context)] = api
         return api
+
+    def shell_kubeconfig(self, ctx_id: str | None, namespace: str | None = None) -> tuple[Path, str, Path | None]:
+        """Write a temp kubeconfig with ``current-context`` set for a local shell.
+
+        Returns ``(kubeconfig_path, context_name, cleanup_path)``. ``cleanup_path`` is the temp file to
+        delete when the shell exits (None when we reused an on-disk source without rewriting).
+        Relative cert paths are rewritten to absolute so a temp copy still works.
+        """
+        if not ctx_id or "|" not in ctx_id:
+            raise K8sError(400, "No cluster selected")
+        source_id, context = ctx_id.split("|", 1)
+        src = self.sources.get(source_id)
+        if src is None:
+            raise K8sError(404, "That kubeconfig is no longer loaded")
+        names = {c.get("name") for c in (src.config.get("contexts") or [])}
+        if context not in names:
+            raise K8sError(404, f"Unknown context {context!r}")
+        cfg = copy.deepcopy(src.config)
+        cfg["current-context"] = context
+        if namespace:
+            for c in cfg.get("contexts") or []:
+                if c.get("name") == context:
+                    c.setdefault("context", {})["namespace"] = namespace
+        if src.path:
+            _absolutize_kubeconfig_paths(cfg, src.path.parent)
+        self.store_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        shell_dir = self.store_dir / "shell"
+        shell_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        path = shell_dir / f"kc-{os.getpid()}-{secrets.token_hex(8)}.yaml"
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            yaml.safe_dump(cfg, fh, sort_keys=False, default_flow_style=False)
+        return path, context, path
+
+
+def _absolutize_kubeconfig_paths(cfg: dict, base: Path) -> None:
+    """Rewrite relative file references so a temp kubeconfig copy still finds certs/keys."""
+
+    def fix(obj: dict | None, *keys: str) -> None:
+        if not obj:
+            return
+        for key in keys:
+            raw = obj.get(key)
+            if isinstance(raw, str) and raw and not raw.startswith("data:") and not os.path.isabs(raw):
+                obj[key] = str((base / raw).resolve())
+
+    for cluster in cfg.get("clusters") or []:
+        fix(cluster.get("cluster"), "certificate-authority")
+    for user in cfg.get("users") or []:
+        u = user.get("user") or {}
+        fix(u, "client-certificate", "client-key")
+        fix((u.get("exec") or {}), "command")  # rarely relative; harmless if absolute/PATH
 
 
 # --------------------------------------------------------------------------------------------------------------------

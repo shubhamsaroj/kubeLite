@@ -13,7 +13,7 @@ from flask_sock import Sock
 
 from . import __version__, k8s
 from .k8s import K8sError, check_name, get_kind
-from .streams import LogTarget, PortForwards, exec_bridge, log_events, watch_events
+from .streams import LogTarget, PortForwards, exec_bridge, local_shell_bridge, log_events, watch_events
 
 log = logging.getLogger(__name__)
 COOKIE = "kubelite_session"
@@ -358,6 +358,19 @@ def create_app(manager: k8s.ClusterManager, token: str, port: int, read_only: bo
             ws.send(f"\r\n{exc.message}\r\n")
             return
         exec_bridge(ws, a, ns, pod, container)
+
+    @sock.route("/ws/local-shell")
+    def local_shell_ws(ws: Any) -> None:
+        """Host shell with KUBECONFIG pointed at the selected context (for kubectl, helm, etc.)."""
+        try:
+            ctx = request.args.get("ctx") or ""
+            ns_raw = request.args.get("ns") or "_all"
+            ns = None if ns_raw in ("", "_all") else check_name(ns_raw, "namespace")
+            path, context, cleanup = manager.shell_kubeconfig(ctx, ns)
+        except K8sError as exc:
+            ws.send(f"\r\n\x1b[31m{exc.message}\x1b[0m\r\n")
+            return
+        local_shell_bridge(ws, path, context, ns, cleanup)
 
     return app
 

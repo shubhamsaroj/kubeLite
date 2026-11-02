@@ -193,6 +193,20 @@ def test_every_kind_has_columns():
     assert set(k8s.KINDS) <= set(k8s.COLUMNS)
 
 
+def test_shell_kubeconfig_sets_current_context(tmp_path: Path):
+    manager = k8s.ClusterManager(tmp_path)
+    src = manager.add_upload(KUBECONFIG, "dev.yaml", remember=False)
+    ctx_id = f"{src.id}|dev"
+    path, context, cleanup = manager.shell_kubeconfig(ctx_id, namespace="apps")
+    assert context == "dev"
+    assert cleanup == path
+    assert path.exists() and (path.stat().st_mode & 0o777) == 0o600
+    text = path.read_text()
+    assert "current-context: dev" in text
+    assert "namespace: apps" in text
+    path.unlink()
+
+
 def test_upload_is_validated_deduplicated_and_stable(tmp_path: Path):
     manager = k8s.ClusterManager(tmp_path)
     with pytest.raises(k8s.K8sError):

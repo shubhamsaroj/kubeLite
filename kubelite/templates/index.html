@@ -40,6 +40,12 @@
     </template>
     <button class="search-btn" @click="openPalette()"><span>Search resources, namespaces…</span><span class="kbd">⌘K</span></button>
     <span class="grow"></span>
+    <button type="button" class="local-shell-btn" x-show="ctx" :disabled="!ctx"
+            :class="{ on: localShell.open && !localShell.minimized, dim: localShell.open && localShell.minimized }"
+            :title="localShell.minimized ? 'Restore local shell' : localShell.open ? 'Minimize local shell' : 'Open a local terminal with KUBECONFIG set to this cluster'"
+            @click="toggleLocalShell()">
+      <span x-text="localShell.minimized ? 'Local shell ▴' : 'Local shell'"></span>
+    </button>
     <span class="row small" x-show="ctx" :class="watchError ? 'tone-bad' : 'tone-ok'">
       <span class="dot"></span><span x-text="watchError ? 'Connection problem' : 'Connected'"></span>
     </span>
@@ -407,6 +413,25 @@
     </aside>
     </div>
   </div>
+
+  <!-- ============================== local shell (host terminal) ============================== -->
+  <div class="local-shell-panel" x-show="localShell.open && !localShell.minimized" x-cloak>
+    <div class="toolbar">
+      <span class="small"><b>Local shell</b>
+        <span class="muted" x-text="ctxInfo ? `· ${ctxInfo.name}` : ''"></span>
+        <span class="muted" x-show="ns && ns !== '_all'" x-text="`· ns ${ns}`"></span>
+      </span>
+      <span class="grow"></span>
+      <span class="small muted">KUBECONFIG set · run kubectl / helm here</span>
+      <button type="button" title="Minimize (keeps the session)" @click="minimizeLocalShell()">Minimize</button>
+      <button type="button" title="Close and end the session" @click="closeLocalShell()">Close</button>
+    </div>
+    <div class="term local-shell-term" x-ref="localTerm"></div>
+  </div>
+  <button type="button" class="local-shell-pill" x-show="localShell.open && localShell.minimized" x-cloak
+          title="Restore local shell" @click="restoreLocalShell()">
+    Local shell · <span x-text="ctxInfo?.name || 'session'"></span> ▴
+  </button>
 
   <!-- ============================== status bar ============================== -->
   <footer class="statusbar">
