@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "kubelite"
 # Keep in sync with kubelite/__init__.py __version__ at release time only.
-version = "1.0.0"
+version = "1.1.0"
 description = "A lightweight, browser-based Kubernetes dashboard. Run it locally, open localhost, drop in a kubeconfig."
 readme = "README.md"
 requires-python = ">=3.10"

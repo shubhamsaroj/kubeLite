@@ -12,10 +12,10 @@ Python **3.10+** on macOS, Linux, or Windows.
 
 **Python 3.10+** required. Check with `python3 --version` (Windows: `py --version`).
 
-Install from the [v1.0.0 release](https://github.com/shubhamsaroj/kubeLite/releases/tag/v1.0.0) wheel (no repo clone):
+Install from the [v1.1.0 release](https://github.com/shubhamsaroj/kubeLite/releases/tag/v1.1.0) wheel (no repo clone):
 
 ```bash
-python3 -m pip install https://github.com/shubhamsaroj/kubeLite/releases/download/v1.0.0/kubelite-1.0.0-py3-none-any.whl
+python3 -m pip install https://github.com/shubhamsaroj/kubeLite/releases/download/v1.1.0/kubelite-1.1.0-py3-none-any.whl
 kubelite
 ```
 
@@ -71,11 +71,11 @@ Pick one path below. You need **Python 3.10+** and a working `pip`.
 
 ### Install from GitHub Release
 
-1. Open [Releases](https://github.com/shubhamsaroj/kubeLite/releases/latest) and note the version tag (e.g. `v1.0.0`) and wheel name (e.g. `kubelite-1.0.0-py3-none-any.whl`).
+1. Open [Releases](https://github.com/shubhamsaroj/kubeLite/releases/latest) and note the version tag (e.g. `v1.1.0`) and wheel name (e.g. `kubelite-1.1.0-py3-none-any.whl`).
 2. Install the wheel (current stable):
 
 ```bash
-python3 -m pip install https://github.com/shubhamsaroj/kubeLite/releases/download/v1.0.0/kubelite-1.0.0-py3-none-any.whl
+python3 -m pip install https://github.com/shubhamsaroj/kubeLite/releases/download/v1.1.0/kubelite-1.1.0-py3-none-any.whl
 ```
 
 3. Start the app:
@@ -93,7 +93,7 @@ Use `python3 -m kubelite` if the `kubelite` command is not on your PATH.
 [pipx](https://pipx.pypa.io/) keeps KubeLite in its own environment and puts `kubelite` on your PATH.
 
 ```bash
-pipx install https://github.com/shubhamsaroj/kubeLite/releases/download/v1.0.0/kubelite-1.0.0-py3-none-any.whl
+pipx install https://github.com/shubhamsaroj/kubeLite/releases/download/v1.1.0/kubelite-1.1.0-py3-none-any.whl
 kubelite
 ```
 
