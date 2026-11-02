@@ -1,0 +1,80 @@
+# Reproduce multi-container shell + native-sidecar STATUS bugs from Istio ASM pods.
+#
+# multi-shell: noshell (pause, no /bin/sh) is listed first; default-container points at app.
+# native-sidecar: init + restartPolicy:Always sidecar (like istio-proxy) + app → expect Running 2/2.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: multi-shell
+  namespace: kubelite-demo
+  labels:
+    app: multi-shell
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: multi-shell
+  template:
+    metadata:
+      labels:
+        app: multi-shell
+      annotations:
+        kubectl.kubernetes.io/default-container: app
+        kubectl.kubernetes.io/default-logs-container: app
+    spec:
+      containers:
+        # Listed first on purpose — naive UIs exec here and fail (no shell).
+        - name: noshell
+          image: registry.k8s.io/pause:3.10
+          resources:
+            requests: { cpu: 1m, memory: 8Mi }
+            limits: { cpu: 20m, memory: 32Mi }
+        - name: app
+          image: busybox:1.37
+          command: ["sh", "-c", "while true; do echo multi-shell-app; sleep 30; done"]
+          resources:
+            requests: { cpu: 5m, memory: 8Mi }
+            limits: { cpu: 50m, memory: 32Mi }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: native-sidecar
+  namespace: kubelite-demo
+  labels:
+    app: native-sidecar
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: native-sidecar
+  template:
+    metadata:
+      labels:
+        app: native-sidecar
+      annotations:
+        kubectl.kubernetes.io/default-container: app
+        kubectl.kubernetes.io/default-logs-container: app
+    spec:
+      initContainers:
+        - name: init-setup
+          image: busybox:1.37
+          command: ["sh", "-c", "echo init-done"]
+          resources:
+            requests: { cpu: 1m, memory: 8Mi }
+            limits: { cpu: 50m, memory: 32Mi }
+        # Native sidecar (same shape as Istio ASM istio-proxy in initContainers).
+        - name: proxy
+          image: registry.k8s.io/pause:3.10
+          restartPolicy: Always
+          resources:
+            requests: { cpu: 1m, memory: 8Mi }
+            limits: { cpu: 20m, memory: 32Mi }
+      containers:
+        - name: app
+          image: busybox:1.37
+          command: ["sh", "-c", "while true; do echo native-sidecar-app; sleep 30; done"]
+          resources:
+            requests: { cpu: 5m, memory: 8Mi }
+            limits: { cpu: 50m, memory: 32Mi }

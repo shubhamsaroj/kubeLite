@@ -358,15 +358,33 @@ def list_objects(api: client.ApiClient, plural: str, namespace: str | None, **pa
 # --------------------------------------------------------------------------------------------------------------------
 
 
+def _is_sidecar_init(spec: dict | None) -> bool:
+    """Native sidecars are init containers with ``restartPolicy: Always`` (Istio ASM, etc.)."""
+    return bool(spec) and spec.get("restartPolicy") == "Always"
+
+
+def _init_specs_by_name(pod: dict) -> dict[str, dict]:
+    return {c["name"]: c for c in ((pod.get("spec") or {}).get("initContainers") or []) if c.get("name")}
+
+
+def _pod_initialized(status: dict) -> bool:
+    return any(c.get("type") == "Initialized" and c.get("status") == "True" for c in status.get("conditions") or [])
+
+
 def pod_status(pod: dict) -> str:
     """The STATUS column exactly as ``kubectl get pods`` derives it (phase alone hides crash loops)."""
     meta, status = pod.get("metadata") or {}, pod.get("status") or {}
     reason = status.get("reason") or status.get("phase") or "Unknown"
+    init_specs = _init_specs_by_name(pod)
     init_statuses = status.get("initContainerStatuses") or []
+    initializing = False
     for i, cs in enumerate(init_statuses):
         state = cs.get("state") or {}
         term, wait = state.get("terminated"), state.get("waiting")
         if term and term.get("exitCode") == 0:
+            continue
+        # Started sidecars stay Running forever; kubectl skips them once ``started`` is true.
+        if _is_sidecar_init(init_specs.get(cs.get("name"))) and cs.get("started"):
             continue
         if term:
             reason = "Init:" + (
@@ -376,9 +394,12 @@ def pod_status(pod: dict) -> str:
         elif wait and wait.get("reason") and wait["reason"] != "PodInitializing":
             reason = "Init:" + wait["reason"]
         else:
-            reason = f"Init:{i}/{len(init_statuses)}"
+            n_inits = len((pod.get("spec") or {}).get("initContainers") or []) or len(init_statuses)
+            reason = f"Init:{i}/{n_inits}"
+        initializing = True
         break
-    else:
+    # Match kubectl: once Initialized=True (or no unfinished inits), report app-container status.
+    if not initializing or _pod_initialized(status):
         has_running = False
         for cs in reversed(status.get("containerStatuses") or []):
             state = cs.get("state") or {}
@@ -427,14 +448,14 @@ def _replica_tone(ready: int, desired: int) -> str:
 
 
 COLUMNS: dict[str, list[str]] = {
-    "pods": ["Ready", "Restarts", "Node", "IP"],
-    "deployments": ["Ready", "Up-to-date", "Available", "Images"],
-    "statefulsets": ["Ready", "Images"],
-    "daemonsets": ["Desired", "Current", "Ready", "Images"],
-    "replicasets": ["Desired", "Current", "Ready"],
+    "pods": ["Ready", "Restarts", "Node", "Pod IP", "Host IP"],
+    "deployments": ["Ready", "Up-to-date", "Available", "Images", "Selector"],
+    "statefulsets": ["Ready", "Images", "Selector"],
+    "daemonsets": ["Desired", "Current", "Ready", "Images", "Selector"],
+    "replicasets": ["Desired", "Current", "Ready", "Selector"],
     "jobs": ["Completions", "Duration"],
     "cronjobs": ["Schedule", "Suspended", "Active", "Last run"],
-    "services": ["Type", "Cluster IP", "Ports"],
+    "services": ["Type", "Cluster IP", "External IP", "Ports"],
     "ingresses": ["Class", "Hosts", "Address"],
     "networkpolicies": ["Pod selector"],
     "configmaps": ["Keys"],
@@ -443,7 +464,7 @@ COLUMNS: dict[str, list[str]] = {
     "serviceaccounts": [],
     "horizontalpodautoscalers": ["Target", "Min", "Max", "Replicas"],
     "events": ["Type", "Reason", "Object", "Message", "Count"],
-    "nodes": ["Roles", "Version", "Internal IP"],
+    "nodes": ["Roles", "Version", "Internal IP", "External IP", "OS Image", "Kernel", "Runtime"],
     "namespaces": [],
     "persistentvolumes": ["Capacity", "Access", "Claim", "Storage class"],
     "storageclasses": ["Provisioner", "Reclaim", "Default"],
@@ -472,14 +493,34 @@ def summarize(plural: str, obj: dict) -> dict:
     if plural == "pods":
         statuses = st.get("containerStatuses") or []
         containers = spec.get("containers") or []
-        ready = sum(1 for c in statuses if c.get("ready"))
-        restarts = sum(c.get("restartCount", 0) for c in statuses)
+        init_specs = {c["name"]: c for c in spec.get("initContainers") or [] if c.get("name")}
+        sidecar_statuses = [
+            cs
+            for cs in (st.get("initContainerStatuses") or [])
+            if _is_sidecar_init(init_specs.get(cs.get("name")))
+        ]
+        total = len(containers) + sum(1 for c in (spec.get("initContainers") or []) if _is_sidecar_init(c))
+        ready = sum(1 for c in statuses if c.get("ready")) + sum(1 for c in sidecar_statuses if c.get("ready"))
+        restarts = sum(c.get("restartCount", 0) for c in statuses) + sum(
+            c.get("restartCount", 0) for c in sidecar_statuses
+        )
         row["status"] = pod_status(obj)
-        row["tone"] = _tone_for_pod(row["status"], ready, len(containers))
-        row["cells"] = [f"{ready}/{len(containers)}", restarts, spec.get("nodeName") or "-", st.get("podIP") or "-"]
+        row["tone"] = _tone_for_pod(row["status"], ready, total)
+        row["cells"] = [
+            f"{ready}/{total}",
+            restarts,
+            spec.get("nodeName") or "<none>",
+            st.get("podIP") or "<none>",
+            st.get("hostIP") or "<none>",
+        ]
         owners = meta.get("ownerReferences") or []
         row["controller"] = next((o.get("kind") for o in owners if o.get("controller")), None)
-        row["containers"] = [c["name"] for c in containers]
+        # App containers first, then native sidecars (so logs/shell can target Istio proxy too).
+        sidecars = [c["name"] for c in (spec.get("initContainers") or []) if _is_sidecar_init(c) and c.get("name")]
+        row["containers"] = [c["name"] for c in containers if c.get("name")] + sidecars
+        ann = meta.get("annotations") or {}
+        default = ann.get("kubectl.kubernetes.io/default-container")
+        row["defaultContainer"] = default if default in row["containers"] else (row["containers"][0] if row["containers"] else None)
         row["ports"] = [
             {"container": c["name"], "port": p["containerPort"], "name": p.get("name")}
             for c in containers
@@ -487,6 +528,17 @@ def summarize(plural: str, obj: dict) -> dict:
             if p.get("protocol", "TCP") == "TCP"
         ]
         row["phase"] = st.get("phase")
+        row["qosClass"] = st.get("qosClass")
+        row["hostIP"] = st.get("hostIP")
+        row["podIP"] = st.get("podIP")
+        row["nominatedNodeName"] = st.get("nominatedNodeName")
+        row["serviceAccount"] = spec.get("serviceAccountName") or "default"
+        row["nodeName"] = spec.get("nodeName")
+        row["priority"] = spec.get("priority")
+        row["conditions"] = [
+            {"type": c.get("type"), "status": c.get("status"), "reason": c.get("reason"), "message": c.get("message")}
+            for c in (st.get("conditions") or [])
+        ]
     elif plural in ("deployments", "statefulsets", "replicasets"):
         desired = spec.get("replicas", 1)
         ready = st.get("readyReplicas", 0)
@@ -494,23 +546,31 @@ def summarize(plural: str, obj: dict) -> dict:
         row["tone"] = _replica_tone(ready, desired)
         row["replicas"] = desired
         row["selector"] = _selector_string(spec.get("selector"))
+        sel = row["selector"] or "<none>"
         if plural == "deployments":
             row["cells"] = [
                 f"{ready}/{desired}",
                 st.get("updatedReplicas", 0),
                 st.get("availableReplicas", 0),
                 images(spec),
+                sel,
             ]
         elif plural == "statefulsets":
-            row["cells"] = [f"{ready}/{desired}", images(spec)]
+            row["cells"] = [f"{ready}/{desired}", images(spec), sel]
         else:
-            row["cells"] = [desired, st.get("replicas", 0), ready]
+            row["cells"] = [desired, st.get("replicas", 0), ready, sel]
     elif plural == "daemonsets":
         desired, ready = st.get("desiredNumberScheduled", 0), st.get("numberReady", 0)
         row["status"] = f"{ready}/{desired} ready"
         row["tone"] = _replica_tone(ready, desired)
         row["selector"] = _selector_string(spec.get("selector"))
-        row["cells"] = [desired, st.get("currentNumberScheduled", 0), ready, images(spec)]
+        row["cells"] = [
+            desired,
+            st.get("currentNumberScheduled", 0),
+            ready,
+            images(spec),
+            row["selector"] or "<none>",
+        ]
     elif plural == "jobs":
         conds = {c.get("type"): c for c in st.get("conditions") or [] if c.get("status") == "True"}
         if "Complete" in conds:
@@ -543,15 +603,21 @@ def summarize(plural: str, obj: dict) -> dict:
     elif plural == "services":
         ports = spec.get("ports") or []
         row["status"], row["tone"] = spec.get("type", "ClusterIP"), "ok"
+        external = spec.get("externalIPs") or []
+        lb = ((st.get("loadBalancer") or {}).get("ingress")) or []
+        lb_addrs = [i.get("ip") or i.get("hostname") for i in lb if i.get("ip") or i.get("hostname")]
+        ext = ", ".join([*external, *lb_addrs]) or "<none>"
         row["cells"] = [
             spec.get("type", "ClusterIP"),
             spec.get("clusterIP") or "-",
+            ext,
             ", ".join(f"{p.get('port')}/{p.get('protocol', 'TCP')}" for p in ports) or "-",
         ]
         row["ports"] = [
             {"port": p.get("port"), "name": p.get("name"), "targetPort": p.get("targetPort")} for p in ports
         ]
         row["hasSelector"] = bool(spec.get("selector"))
+        row["selector"] = ",".join(f"{k}={v}" for k, v in (spec.get("selector") or {}).items())
     elif plural == "ingresses":
         lb = ((st.get("loadBalancer") or {}).get("ingress")) or []
         address = ", ".join(i.get("ip") or i.get("hostname") or "" for i in lb)
@@ -609,8 +675,21 @@ def summarize(plural: str, obj: dict) -> dict:
         )
         row["tone"] = "ok" if is_ready and not spec.get("unschedulable") else "warn" if is_ready else "bad"
         roles = [k.split("/", 1)[1] for k in row["labels"] if k.startswith("node-role.kubernetes.io/")]
-        ip = next((a.get("address") for a in st.get("addresses") or [] if a.get("type") == "InternalIP"), "-")
-        row["cells"] = [", ".join(roles) or "<none>", (st.get("nodeInfo") or {}).get("kubeletVersion", "-"), ip]
+        addrs = {a.get("type"): a.get("address") for a in st.get("addresses") or [] if a.get("type")}
+        info = st.get("nodeInfo") or {}
+        row["cells"] = [
+            ", ".join(roles) or "<none>",
+            info.get("kubeletVersion", "-"),
+            addrs.get("InternalIP") or "-",
+            addrs.get("ExternalIP") or "<none>",
+            info.get("osImage") or "-",
+            info.get("kernelVersion") or "-",
+            info.get("containerRuntimeVersion") or "-",
+        ]
+        row["capacity"] = st.get("capacity") or {}
+        row["allocatable"] = st.get("allocatable") or {}
+        row["architecture"] = info.get("architecture")
+        row["operatingSystem"] = info.get("operatingSystem")
     elif plural == "namespaces":
         phase = st.get("phase", "Active")
         row["status"], row["tone"] = phase, "ok" if phase == "Active" else "warn"
@@ -673,6 +752,325 @@ def events_for(api: client.ApiClient, kind: Kind, namespace: str | None, name: s
     data = list_objects(api, "events", namespace, fieldSelector=selector)
     rows = [summarize("events", e) for e in data.get("items") or []]
     return sorted(rows, key=lambda r: r.get("last") or "", reverse=True)
+
+
+def describe_resource(api: client.ApiClient, plural: str, namespace: str | None, name: str) -> dict:
+    """Fresh object + events, formatted like ``kubectl describe`` for debugging."""
+    obj = get_object(api, plural, namespace, name)
+    # Fetch raw events (not summarized rows) so messages stay complete.
+    kind = get_kind(plural)
+    selector = f"involvedObject.name={name},involvedObject.kind={kind.kind}"
+    try:
+        raw_events = list_objects(api, "events", namespace, fieldSelector=selector).get("items") or []
+    except K8sError:
+        raw_events = []
+    raw_events.sort(
+        key=lambda e: e.get("lastTimestamp") or e.get("eventTime") or e.get("metadata", {}).get("creationTimestamp") or "",
+        reverse=True,
+    )
+    return {
+        "text": format_describe(plural, obj, raw_events),
+        "fetchedAt": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "row": summarize(plural, obj),
+    }
+
+
+def format_describe(plural: str, obj: dict, events: list[dict] | None = None) -> str:
+    """kubectl-describe-style text. Pods/nodes get rich sections; others get a useful generic dump."""
+    if plural == "pods":
+        return _describe_pod(obj, events or [])
+    if plural == "nodes":
+        return _describe_node(obj, events or [])
+    return _describe_generic(plural, obj, events or [])
+
+
+def _fmt_map_block(title: str, data: dict | None) -> list[str]:
+    if not data:
+        return [f"{title}:\t<none>"]
+    lines = [f"{title}:"]
+    for k, v in sorted(data.items()):
+        lines.append(f"  {k}={v}")
+    return lines
+
+
+def _describe_container(c: dict, status: dict | None, kind: str = "app") -> list[str]:
+    st = status or {}
+    state = st.get("state") or {}
+    if state.get("running"):
+        state_name = "Running"
+    elif state.get("waiting"):
+        state_name = "Waiting"
+    elif state.get("terminated"):
+        state_name = "Terminated"
+    else:
+        state_name = "Unknown"
+    ports = ", ".join(
+        f"{p.get('containerPort')}/{p.get('protocol', 'TCP')}" + (f" ({p['name']})" if p.get("name") else "")
+        for p in c.get("ports") or []
+    ) or "<none>"
+    mounts = c.get("volumeMounts") or []
+    lines = [
+        f"  {c.get('name')}:",
+        f"    Container ID:\t{st.get('containerID') or '<none>'}",
+        f"    Image:\t{c.get('image')}",
+        f"    Image ID:\t{st.get('imageID') or '<none>'}",
+        f"    Ports:\t{ports}",
+        f"    State:\t{state_name}",
+    ]
+    if state.get("running"):
+        lines.append(f"      Started:\t{state['running'].get('startedAt', '')}")
+    elif state.get("waiting"):
+        lines.append(f"      Reason:\t{state['waiting'].get('reason', '')}")
+        if state["waiting"].get("message"):
+            lines.append(f"      Message:\t{state['waiting']['message']}")
+    elif state.get("terminated"):
+        t = state["terminated"]
+        lines.append(f"      Reason:\t{t.get('reason', '')}")
+        lines.append(f"      Exit Code:\t{t.get('exitCode')}")
+        lines.append(f"      Started:\t{t.get('startedAt', '')}")
+        lines.append(f"      Finished:\t{t.get('finishedAt', '')}")
+    lines.append(f"    Ready:\t{st.get('ready', False)}")
+    lines.append(f"    Restart Count:\t{st.get('restartCount', 0)}")
+    if c.get("restartPolicy"):
+        lines.append(f"    Restart Policy:\t{c.get('restartPolicy')}")
+    req, lim = (c.get("resources") or {}).get("requests") or {}, (c.get("resources") or {}).get("limits") or {}
+    if lim:
+        lines.append(f"    Limits:")
+        for k, v in lim.items():
+            lines.append(f"      {k}:\t{v}")
+    if req:
+        lines.append(f"    Requests:")
+        for k, v in req.items():
+            lines.append(f"      {k}:\t{v}")
+    for probe_name in ("livenessProbe", "readinessProbe", "startupProbe"):
+        probe = c.get(probe_name)
+        if not probe:
+            continue
+        http = probe.get("httpGet") or {}
+        if http:
+            lines.append(
+                f"    {probe_name[0].upper() + probe_name[1:]}:\thttp-get "
+                f"{http.get('scheme', 'HTTP')}://:{http.get('port')}{http.get('path', '/')} "
+                f"delay={probe.get('initialDelaySeconds', 0)}s timeout={probe.get('timeoutSeconds', 1)}s "
+                f"period={probe.get('periodSeconds', 10)}s"
+            )
+    env = c.get("env") or []
+    if env:
+        lines.append("    Environment:")
+        for e in env:
+            if "value" in e:
+                lines.append(f"      {e.get('name')}:\t{e.get('value')}")
+            elif e.get("valueFrom"):
+                vf = e["valueFrom"]
+                if "secretKeyRef" in vf:
+                    ref = vf["secretKeyRef"]
+                    lines.append(
+                        f"      {e.get('name')}:\t<set to the key '{ref.get('key')}' in secret '{ref.get('name')}'>"
+                    )
+                elif "configMapKeyRef" in vf:
+                    ref = vf["configMapKeyRef"]
+                    lines.append(
+                        f"      {e.get('name')}:\t<set to the key '{ref.get('key')}' in config map '{ref.get('name')}'>"
+                    )
+                elif "fieldRef" in vf:
+                    lines.append(f"      {e.get('name')}:\t(v1:{vf['fieldRef'].get('fieldPath')})")
+                else:
+                    lines.append(f"      {e.get('name')}:\t<from valueFrom>")
+            else:
+                lines.append(f"      {e.get('name')}:\t<none>")
+    else:
+        lines.append("    Environment:\t<none>")
+    if mounts:
+        lines.append("    Mounts:")
+        for m in mounts:
+            ro = " (ro)" if m.get("readOnly") else ""
+            lines.append(f"      {m.get('mountPath')} from {m.get('name')}{ro}")
+    else:
+        lines.append("    Mounts:\t<none>")
+    return lines
+
+
+def _describe_events(events: list[dict]) -> list[str]:
+    lines = ["Events:"]
+    if not events:
+        lines.append("  <none>")
+        return lines
+    lines.append(f"  Type    Reason  Age  From  Message")
+    lines.append(f"  ----    ------  ---  ----  -------")
+    for e in events[:40]:
+        meta = e.get("metadata") or {}
+        etype = e.get("type", "Normal")
+        reason = e.get("reason") or ""
+        age = e.get("lastTimestamp") or e.get("eventTime") or meta.get("creationTimestamp") or ""
+        src = (e.get("source") or {}).get("component") or (e.get("reportingComponent") or "")
+        msg = (e.get("message") or "").replace("\n", " ")
+        count = e.get("count") or 1
+        age_s = f"{count}× {age}" if count and count > 1 else str(age)
+        lines.append(f"  {etype}  {reason}  {age_s}  {src}  {msg}")
+    return lines
+
+
+def _describe_pod(obj: dict, events: list[dict]) -> str:
+    meta, spec, st = obj.get("metadata") or {}, obj.get("spec") or {}, obj.get("status") or {}
+    owners = meta.get("ownerReferences") or []
+    controlled = next((f"{o.get('kind')}/{o.get('name')}" for o in owners if o.get("controller")), "<none>")
+    statuses = {c.get("name"): c for c in (st.get("containerStatuses") or []) if c.get("name")}
+    init_statuses = {c.get("name"): c for c in (st.get("initContainerStatuses") or []) if c.get("name")}
+    lines = [
+        f"Name:\t\t{meta.get('name')}",
+        f"Namespace:\t{meta.get('namespace')}",
+        f"Priority:\t{spec.get('priority', 0)}",
+        f"Service Account:\t{spec.get('serviceAccountName') or 'default'}",
+        f"Node:\t\t{spec.get('nodeName') or '<none>'}"
+        + (f"/{st.get('hostIP')}" if st.get("hostIP") else ""),
+        f"Start Time:\t{st.get('startTime') or meta.get('creationTimestamp') or '<none>'}",
+        *_fmt_map_block("Labels", meta.get("labels")),
+        *_fmt_map_block("Annotations", meta.get("annotations")),
+        f"Status:\t\t{pod_status(obj)}",
+        f"IP:\t\t{st.get('podIP') or '<none>'}",
+        f"IPs:",
+    ]
+    for ip in st.get("podIPs") or ([{"ip": st["podIP"]}] if st.get("podIP") else []):
+        lines.append(f"  IP:\t{ip.get('ip')}")
+    if not st.get("podIP") and not st.get("podIPs"):
+        lines.append("  IP:\t<none>")
+    lines.append(f"Controlled By:\t{controlled}")
+    if st.get("nominatedNodeName"):
+        lines.append(f"Nominated Node Name:\t{st['nominatedNodeName']}")
+    init_cs = spec.get("initContainers") or []
+    if init_cs:
+        lines.append("Init Containers:")
+        for c in init_cs:
+            lines.extend(_describe_container(c, init_statuses.get(c.get("name")), "init"))
+    lines.append("Containers:")
+    for c in spec.get("containers") or []:
+        lines.extend(_describe_container(c, statuses.get(c.get("name")), "app"))
+    lines.append("Conditions:")
+    lines.append(f"  Type\tStatus")
+    for c in st.get("conditions") or []:
+        lines.append(f"  {c.get('type')}\t{c.get('status')}" + (f"\t{c.get('reason') or ''}" if c.get("reason") else ""))
+    lines.append("Volumes:")
+    for v in spec.get("volumes") or []:
+        name = v.get("name")
+        if "configMap" in v:
+            lines.append(f"  {name}:")
+            lines.append(f"    Type:\tConfigMap (a volume populated by a ConfigMap)")
+            lines.append(f"    Name:\t{v['configMap'].get('name')}")
+        elif "secret" in v:
+            lines.append(f"  {name}:")
+            lines.append(f"    Type:\tSecret (a volume populated by a Secret)")
+            lines.append(f"    SecretName:\t{v['secret'].get('secretName')}")
+        elif "persistentVolumeClaim" in v:
+            lines.append(f"  {name}:")
+            lines.append(f"    Type:\tPersistentVolumeClaim")
+            lines.append(f"    ClaimName:\t{v['persistentVolumeClaim'].get('claimName')}")
+        elif "emptyDir" in v:
+            lines.append(f"  {name}:")
+            lines.append(f"    Type:\tEmptyDir")
+            if v["emptyDir"].get("medium"):
+                lines.append(f"    Medium:\t{v['emptyDir']['medium']}")
+        elif "projected" in v:
+            lines.append(f"  {name}:")
+            lines.append(f"    Type:\tProjected (a volume that contains injected data from multiple sources)")
+        else:
+            kind = next((k for k in v if k != "name"), "volume")
+            lines.append(f"  {name}:")
+            lines.append(f"    Type:\t{kind}")
+    if not (spec.get("volumes") or []):
+        lines.append("  <none>")
+    lines.append(f"QoS Class:\t{st.get('qosClass') or '<none>'}")
+    ns = spec.get("nodeSelector") or {}
+    lines.append(f"Node-Selectors:\t" + (",".join(f"{k}={v}" for k, v in ns.items()) or "<none>"))
+    tols = spec.get("tolerations") or []
+    if tols:
+        lines.append("Tolerations:")
+        for t in tols:
+            key = t.get("key") or ""
+            effect = t.get("effect") or ""
+            op = t.get("operator") or "Equal"
+            val = t.get("value") or ""
+            secs = t.get("tolerationSeconds")
+            extra = f" for {secs}s" if secs is not None else ""
+            if op == "Exists":
+                lines.append(f"  {key}:{effect} op=Exists{extra}" if key else f"  :{effect} op=Exists{extra}")
+            else:
+                lines.append(f"  {key}={val}:{effect}{extra}")
+    else:
+        lines.append("Tolerations:\t<none>")
+    lines.extend(_describe_events(events))
+    return "\n".join(lines) + "\n"
+
+
+def _describe_node(obj: dict, events: list[dict]) -> str:
+    meta, spec, st = obj.get("metadata") or {}, obj.get("spec") or {}, obj.get("status") or {}
+    info = st.get("nodeInfo") or {}
+    addrs = st.get("addresses") or []
+    lines = [
+        f"Name:\t{meta.get('name')}",
+        *_fmt_map_block("Labels", meta.get("labels")),
+        *_fmt_map_block("Annotations", meta.get("annotations")),
+        f"CreationTimestamp:\t{meta.get('creationTimestamp')}",
+        f"Taints:\t" + (", ".join(f"{t.get('key')}={t.get('value') or ''}:{t.get('effect')}" for t in spec.get("taints") or []) or "<none>"),
+        f"Unschedulable:\t{bool(spec.get('unschedulable'))}",
+        "Addresses:",
+    ]
+    for a in addrs:
+        lines.append(f"  {a.get('type')}:\t{a.get('address')}")
+    if not addrs:
+        lines.append("  <none>")
+    lines.append("Capacity:")
+    for k, v in sorted((st.get("capacity") or {}).items()):
+        lines.append(f"  {k}:\t{v}")
+    lines.append("Allocatable:")
+    for k, v in sorted((st.get("allocatable") or {}).items()):
+        lines.append(f"  {k}:\t{v}")
+    lines.append("System Info:")
+    for key, label in [
+        ("machineID", "Machine ID"),
+        ("systemUUID", "System UUID"),
+        ("bootID", "Boot ID"),
+        ("kernelVersion", "Kernel Version"),
+        ("osImage", "OS Image"),
+        ("operatingSystem", "Operating System"),
+        ("architecture", "Architecture"),
+        ("containerRuntimeVersion", "Container Runtime Version"),
+        ("kubeletVersion", "Kubelet Version"),
+        ("kubeProxyVersion", "Kube-Proxy Version"),
+    ]:
+        lines.append(f"  {label}:\t{info.get(key) or '<unknown>'}")
+    lines.append("Conditions:")
+    lines.append("  Type\tStatus\tLastHeartbeatTime\tLastTransitionTime\tReason\tMessage")
+    for c in st.get("conditions") or []:
+        lines.append(
+            f"  {c.get('type')}\t{c.get('status')}\t{c.get('lastHeartbeatTime', '')}\t"
+            f"{c.get('lastTransitionTime', '')}\t{c.get('reason', '')}\t{c.get('message', '')}"
+        )
+    lines.extend(_describe_events(events))
+    return "\n".join(lines) + "\n"
+
+
+def _describe_generic(plural: str, obj: dict, events: list[dict]) -> str:
+    meta, spec, st = obj.get("metadata") or {}, obj.get("spec") or {}, obj.get("status") or {}
+    kind = get_kind(plural)
+    lines = [
+        f"Name:\t\t{meta.get('name')}",
+        f"Namespace:\t{meta.get('namespace') or '<none>'}",
+        f"Kind:\t\t{kind.kind}",
+        f"API Version:\t{obj.get('apiVersion') or kind.group_version}",
+        f"Created:\t{meta.get('creationTimestamp')}",
+        *_fmt_map_block("Labels", meta.get("labels")),
+        *_fmt_map_block("Annotations", meta.get("annotations")),
+    ]
+    if spec:
+        lines.append("Spec:")
+        dumped = yaml.safe_dump(spec, sort_keys=False, default_flow_style=False).rstrip().splitlines()
+        lines.extend(f"  {ln}" if ln else "" for ln in dumped)
+    if st:
+        lines.append("Status:")
+        dumped = yaml.safe_dump(st, sort_keys=False, default_flow_style=False).rstrip().splitlines()
+        lines.extend(f"  {ln}" if ln else "" for ln in dumped)
+    lines.extend(_describe_events(events))
+    return "\n".join(lines) + "\n"
 
 
 def pods_for_workload(api: client.ApiClient, plural: str, namespace: str, name: str) -> list[dict]:

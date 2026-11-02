@@ -252,7 +252,11 @@ def exec_bridge(ws: Any, api: client.ApiClient, namespace: str, pod: str, contai
             _preload_content=False,
         )
     except Exception as exc:
-        ws.send(f"\r\n\x1b[31mCould not open a shell: {_short_error(exc)}\x1b[0m\r\n")
+        hint = f" in {container}" if container else ""
+        ws.send(
+            f"\r\n\x1b[31mCould not open a shell{hint}: {_short_error(exc)}\x1b[0m\r\n"
+            f"\x1b[90mTip: pick a container that has /bin/sh (distroless / Istio proxy often do not).\x1b[0m\r\n"
+        )
         return
 
     def pump_output() -> None:

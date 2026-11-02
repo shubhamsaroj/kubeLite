@@ -40,6 +40,13 @@ const SINCE_SECONDS = { "5m": 300, "15m": 900, "1h": 3600, "6h": 21600, "24h": 8
 const LEVELS = ["ERROR", "WARN", "INFO", "DEBUG"];
 const LEVEL_RE = /\b(fatal|panic|critical|error|err|warn(?:ing)?|info|debug|trace)\b/i;
 const PANE_COLORS = ["var(--c1)", "var(--c2)", "var(--c3)", "var(--c4)"];
+// When the table watch isn't the same kind as the drawer (e.g. opened node from map), still label overview cells.
+const COLUMNS_FALLBACK = {
+  pods: ["Ready", "Restarts", "Node", "Pod IP", "Host IP"],
+  nodes: ["Roles", "Version", "Internal IP", "External IP", "OS Image", "Kernel", "Runtime"],
+  services: ["Type", "Cluster IP", "External IP", "Ports"],
+  deployments: ["Ready", "Up-to-date", "Available", "Images", "Selector"],
+};
 
 function levelOf(text) {
   const m = LEVEL_RE.exec(text.slice(0, 160));
@@ -169,7 +176,8 @@ Alpine.data("kubelite", () => ({
   // overview
   ov: null,
   // drawer
-  sel: null, tab: "overview", detail: null, detailError: "", events: [], perms: {}, permsLoading: false, editing: false, yamlDraft: "", revealed: null,
+  sel: null, tab: "overview", detail: null, detailError: "", events: [], describe: null, describeLoading: false, describeError: "",
+  perms: {}, permsLoading: false, editing: false, yamlDraft: "", revealed: null, shellContainer: null,
   _lastWatchErr: "",
   history: [], graph: null, graphLoading: false, scaleTo: 0, wide: false,
   drawerDock: localStorage.getItem("kubelite.drawerDock") === "bottom" ? "bottom" : "right",
@@ -526,11 +534,15 @@ Alpine.data("kubelite", () => ({
     }
     if (this.editing && !confirm("Discard your unsaved YAML edits?")) return;
     this.closeTerminal();
+    this.shellContainer = null;
     this.sel = { plural, row };
     this.editing = false;
     this.revealed = null;
     this.detail = null;
     this.events = [];
+    this.describe = null;
+    this.describeError = "";
+    this.describeLoading = false;
     this.history = [];
     this.graph = null;
     this.graphLoading = false;
@@ -541,6 +553,7 @@ Alpine.data("kubelite", () => ({
     this.tab = tab || (plural === "pods" ? "logs" : "overview");
     if (plural === "pods" && this.tab === "logs") this.openPodLogs(row);
     this.loadDetail();
+    if (this.tab === "describe") this.loadDescribe();
   },
   async loadDetail() {
     const { plural, row } = this.sel;
@@ -643,12 +656,15 @@ Alpine.data("kubelite", () => ({
   get tabs() {
     if (!this.sel) return [];
     const p = this.sel.plural;
-    const t = ["overview"];
+    const t = ["overview", "describe"];
     if (GRAPH_KINDS.has(p)) t.push("map");
     t.push("yaml", "events");
-    if (p === "pods") t.splice(1, 0, "logs", "shell");
+    if (p === "pods") t.splice(2, 0, "logs", "shell");
     if (p === "deployments") t.push("history");
     return t;
+  },
+  tabLabel(t) {
+    return ({ yaml: "YAML", map: "Map", describe: "Describe" }[t]) || t;
   },
   setTab(t) {
     if (t === "shell" && !this.guardEdit(() => this.setTab(t))) return;
@@ -656,6 +672,31 @@ Alpine.data("kubelite", () => ({
     this.tab = t;
     if (t === "logs" && this.sel?.plural === "pods" && !this.isPaneOpen(this.sel.row)) this.openPodLogs(this.sel.row);
     if (t === "shell") this.$nextTick(() => this.openTerminal());
+    if (t === "describe") this.loadDescribe();
+  },
+  async loadDescribe(force = false) {
+    if (!this.sel) return;
+    if (this.describe && !force && !this.describeError) return;
+    const { plural, row } = this.sel;
+    const ns = row.namespace || "_";
+    const token = row.uid;
+    this.describeLoading = true;
+    this.describeError = "";
+    try {
+      const res = await api(`/api/r/${plural}/${ns}/${row.name}/describe?${this.q()}`);
+      if (this.sel?.row.uid !== token) return;
+      this.describe = res;
+      if (res.row) this.sel.row = { ...this.sel.row, ...res.row };
+    } catch (e) {
+      if (this.sel?.row.uid !== token) return;
+      this.describeError = e.message;
+      this.toast(e.message, "err");
+    } finally {
+      if (this.sel?.row.uid === token) this.describeLoading = false;
+    }
+  },
+  refreshDescribe() {
+    this.loadDescribe(true);
   },
   allowed(action) {
     return !this.rbacBlocked(action) && this.editMode && !this.readOnly;
@@ -703,11 +744,35 @@ Alpine.data("kubelite", () => ({
     const pairs = [["Name", row.name]];
     if (row.namespace) pairs.push(["Namespace", row.namespace]);
     if (this.showStatusFor(plural)) pairs.push(["Status", row.status]);
-    const cols = this.columns.length && this.view === plural ? this.columns : [];
+    const cols = this.columns.length && this.view === plural ? this.columns : (COLUMNS_FALLBACK[plural] || []);
     cols.forEach((c, i) => pairs.push([c, String(row.cells[i] ?? "-")]));
     if (row.controller) pairs.push(["Controlled by", row.controller]);
-    if (row.containers) pairs.push(["Containers", row.containers.join(", ")]);
-    if (row.selector) pairs.push(["Selector", row.selector]);
+    if (row.containers?.length) {
+      const def = row.defaultContainer ? ` (default: ${row.defaultContainer})` : "";
+      pairs.push(["Containers", row.containers.join(", ") + def]);
+    }
+    if (row.qosClass) pairs.push(["QoS class", row.qosClass]);
+    if (row.nominatedNodeName) pairs.push(["Nominated node", row.nominatedNodeName]);
+    if (row.serviceAccount) pairs.push(["Service account", row.serviceAccount]);
+    if (row.architecture) pairs.push(["Architecture", row.architecture]);
+    if (row.operatingSystem) pairs.push(["Operating system", row.operatingSystem]);
+    if (row.allocatable && Object.keys(row.allocatable).length) {
+      const a = row.allocatable;
+      pairs.push(["Allocatable", `cpu=${a.cpu || "-"} memory=${a.memory || "-"} pods=${a.pods || "-"}`]);
+    }
+    if (row.capacity && Object.keys(row.capacity).length) {
+      const c = row.capacity;
+      pairs.push(["Capacity", `cpu=${c.cpu || "-"} memory=${c.memory || "-"} pods=${c.pods || "-"}`]);
+    }
+    if (row.conditions?.length) {
+      pairs.push([
+        "Conditions",
+        row.conditions.map((c) => `${c.type}=${c.status}${c.reason ? `(${c.reason})` : ""}`).join(", "),
+      ]);
+    }
+    if (row.selector && plural !== "deployments" && plural !== "statefulsets" && plural !== "daemonsets" && plural !== "replicasets") {
+      pairs.push(["Selector", row.selector]);
+    }
     pairs.push(["Created", `${row.created || "-"} (${this.age(row.created)} ago)`]);
     return pairs;
   },
@@ -909,7 +974,12 @@ Alpine.data("kubelite", () => ({
     const el = this.$refs.term;
     const row = this.sel?.row;
     if (!el || !row) return;
-    container = container || this.shellContainer || row.containers[0];
+    // Prefer kubectl.kubernetes.io/default-container (and never stick on a prior pod's pick).
+    container = container || this.shellContainer || row.defaultContainer || row.containers?.[0];
+    if (!container) {
+      el.textContent = "";
+      return;
+    }
     this.shellContainer = container;
     const t = new window.Terminal({ cursorBlink: true, fontSize: 12, fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace", theme: this.termTheme() });
     const fit = new window.FitAddon.FitAddon();

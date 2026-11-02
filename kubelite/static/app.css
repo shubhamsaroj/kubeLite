@@ -1,39 +1,39 @@
 /* KubeLite styles. Every color is a variable so light and dark themes swap in one place. */
 
-/* Premium palettes (indigo light + layered blue-gray dark). Typography stays in body rules below. */
+/* Warm cream light + soft cyan-teal accent. Typography stays in body rules below. */
 :root,
 [data-theme="light"] {
   color-scheme: light;
-  --bg: #f3f4f6;
-  --chrome: #eceff3;
-  --sunken: #ffffff;
-  --fg: #272a30;
-  --fg2: #434851;
-  --fg3: #656d78;
-  --fg4: #8a919a;
-  --fill1: #272a3014;
-  --fill2: #272a300a;
-  --fill3: #272a3006;
-  --stroke1: #272a301c;
-  --stroke2: #272a3012;
-  --stroke3: #272a3010;
-  --accent: #4f63e0;
-  --accent-hover: #4254c9;
+  --bg: #f6f3eb;
+  --chrome: #efebe1;
+  --sunken: #fbf9f3;
+  --fg: #2a271f;
+  --fg2: #4a463c;
+  --fg3: #6e695c;
+  --fg4: #958f80;
+  --fill1: #0e749014;
+  --fill2: #0e74900a;
+  --fill3: #0e749006;
+  --stroke1: #2a271f1c;
+  --stroke2: #2a271f12;
+  --stroke3: #2a271f0a;
+  --accent: #0e7490;
+  --accent-hover: #155e75;
   --on-accent: #ffffff;
-  --link: #4f63e0;
+  --link: #0e7490;
   --ok: #0f7a56;
   --warn: #a16207;
   --bad: #be3d5a;
-  --mark: #fbbf2438;
-  --mark-cur: #d97706;
-  --c1: #3b82c4;
-  --c2: #7c6adb;
-  --c3: #2d9aad;
+  --mark: #fde68a55;
+  --mark-cur: #ca8a04;
+  --c1: #0e7490;
+  --c2: #0891b2;
+  --c3: #0f766e;
   --c4: #c45c94;
   --shadow-sm: none;
-  --shadow-md: 0 10px 40px #272a3010;
-  --shadow-lg: 0 20px 50px #272a3018;
-  --overlay: #272a3028;
+  --shadow-md: 0 10px 40px #2a271f12;
+  --shadow-lg: 0 20px 50px #2a271f18;
+  --overlay: #2a271f28;
 }
 
 [data-theme="dark"] {
@@ -277,8 +277,8 @@ body.resizing-drawer { cursor: col-resize; user-select: none; }
 body.resizing-drawer-y { cursor: row-resize; }
 .search-scope { margin-right: 4px; }
 .pf-dialog .pf-preview { margin: 0; padding: 8px 10px; border-radius: 6px; background: var(--fill3); border: 1px solid var(--stroke3); }
-.yaml-panel { min-height: 0; display: flex; flex-direction: column; flex: 1; }
-.yaml-scroll { flex: 1; min-height: 0; }
+.yaml-panel { min-height: 0; display: flex; flex-direction: column; flex: 1; overflow: hidden; }
+.yaml-scroll { flex: 1; min-height: 0; overflow: auto; }
 .yaml-code { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; min-width: min-content; }
 .yaml-ln {
   grid-column: 1; grid-row: 1;
@@ -296,9 +296,15 @@ textarea.code.yaml-edit { display: block; height: auto; }
 .tabs { display: flex; gap: 2px; padding: 0 8px; border-bottom: 1px solid var(--stroke3); }
 .tab { padding: 8px; font-size: 12px; cursor: pointer; color: var(--fg3); border-bottom: 2px solid transparent; margin-bottom: -1px; text-transform: capitalize; }
 .tab.on { color: var(--fg); border-bottom-color: var(--accent); font-weight: 500; }
-.kv { display: grid; grid-template-columns: 130px 1fr; gap: 0; font-size: 12px; }
+.kv { display: grid; grid-template-columns: 140px 1fr; gap: 0; font-size: 12px; }
 .kv .k, .kv .v { padding: 6px 8px 6px 0; border-bottom: 1px solid var(--stroke3); overflow-wrap: anywhere; }
 .kv .k { color: var(--fg3); }
+.describe-scroll { background: var(--sunken); }
+.describe-view {
+  display: block; margin: 0; padding: 12px 14px; font-size: 12px; line-height: 1.45;
+  white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 2;
+  color: var(--fg); background: transparent;
+}
 .label { display: inline-block; font-size: 11px; padding: 1px 7px; margin: 0 4px 4px 0; border-radius: 999px; background: var(--fill2); }
 pre.code { margin: 0; padding: 10px 12px; font-size: 12px; line-height: 1.5; background: var(--sunken); min-height: 100%; white-space: pre; tab-size: 2; }
 textarea.code { width: 100%; height: 100%; min-height: 100%; border: 0; border-radius: 0; background: var(--sunken); resize: none; font-size: 12px; line-height: 1.5; white-space: pre; }

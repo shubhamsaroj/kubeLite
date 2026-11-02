@@ -26,19 +26,26 @@ current-context: dev
 """
 
 
-def pod(phase="Running", containers=(), init=(), deleting=False, ready=True):
+def pod(phase="Running", containers=(), init=(), init_specs=(), deleting=False, ready=True, initialized=None):
+    conditions = [{"type": "Ready", "status": "True" if ready else "False"}]
+    if initialized is not None:
+        conditions.append({"type": "Initialized", "status": "True" if initialized else "False"})
+    specs = list(init_specs) if init_specs else [{"name": f"i{i}"} for i in range(len(init))]
     return {
         "metadata": {
             "name": "p",
             "namespace": "n",
             **({"deletionTimestamp": "2026-01-01T00:00:00Z"} if deleting else {}),
         },
-        "spec": {"containers": [{"name": f"c{i}"} for i in range(len(containers))]},
+        "spec": {
+            "containers": [{"name": f"c{i}"} for i in range(len(containers))],
+            "initContainers": specs,
+        },
         "status": {
             "phase": phase,
             "containerStatuses": list(containers),
             "initContainerStatuses": list(init),
-            "conditions": [{"type": "Ready", "status": "True" if ready else "False"}],
+            "conditions": conditions,
         },
     }
 
@@ -66,10 +73,79 @@ def waiting(reason):
         (pod(phase="Pending", init=[waiting("CrashLoopBackOff")]), "Init:CrashLoopBackOff"),
         (pod(phase="Pending", init=[{"state": {"running": {}}}, {"state": {}}]), "Init:0/2"),
         (pod(containers=[running()], deleting=True), "Terminating"),
+        # Native sidecar (restartPolicy Always) that has started must not stick STATUS on Init:1/2.
+        (
+            pod(
+                containers=[running()],
+                init=[
+                    {"name": "istio-init", "state": {"terminated": {"exitCode": 0, "reason": "Completed"}}},
+                    {"name": "istio-proxy", "ready": True, "started": True, "state": {"running": {}}},
+                ],
+                init_specs=[
+                    {"name": "istio-init"},
+                    {"name": "istio-proxy", "restartPolicy": "Always"},
+                ],
+                initialized=True,
+            ),
+            "Running",
+        ),
     ],
 )
 def test_pod_status_matches_kubectl(obj, expected):
     assert k8s.pod_status(obj) == expected
+
+
+def test_summarize_counts_native_sidecars_in_ready():
+    obj = pod(
+        containers=[running()],
+        init=[
+            {"name": "istio-init", "state": {"terminated": {"exitCode": 0}}},
+            {"name": "istio-proxy", "ready": True, "started": True, "restartCount": 0, "state": {"running": {}}},
+        ],
+        init_specs=[{"name": "istio-init"}, {"name": "istio-proxy", "restartPolicy": "Always"}],
+        initialized=True,
+    )
+    obj["metadata"]["annotations"] = {"kubectl.kubernetes.io/default-container": "c0"}
+    row = k8s.summarize("pods", obj)
+    assert row["status"] == "Running"
+    assert row["cells"][0] == "2/2"
+    assert row["containers"] == ["c0", "istio-proxy"]
+    assert row["defaultContainer"] == "c0"
+
+
+def test_summarize_node_wide_columns():
+    node = {
+        "metadata": {"name": "n1", "labels": {"node-role.kubernetes.io/control-plane": ""}},
+        "spec": {},
+        "status": {
+            "conditions": [{"type": "Ready", "status": "True"}],
+            "addresses": [
+                {"type": "InternalIP", "address": "10.0.0.1"},
+                {"type": "ExternalIP", "address": "1.2.3.4"},
+            ],
+            "nodeInfo": {
+                "kubeletVersion": "v1.37.0",
+                "osImage": "Debian GNU/Linux 13 (trixie)",
+                "kernelVersion": "6.18.0",
+                "containerRuntimeVersion": "containerd://2.0.0",
+                "architecture": "arm64",
+                "operatingSystem": "linux",
+            },
+            "capacity": {"cpu": "4", "memory": "8Gi", "pods": "110"},
+            "allocatable": {"cpu": "3500m", "memory": "7Gi", "pods": "110"},
+        },
+    }
+    row = k8s.summarize("nodes", node)
+    assert row["cells"] == [
+        "control-plane",
+        "v1.37.0",
+        "10.0.0.1",
+        "1.2.3.4",
+        "Debian GNU/Linux 13 (trixie)",
+        "6.18.0",
+        "containerd://2.0.0",
+    ]
+    assert len(row["cells"]) == len(k8s.COLUMNS["nodes"])
 
 
 def test_friendly_api_error_for_403_list():
@@ -83,6 +159,34 @@ def test_summarize_pod_row():
     assert row["status"] == "CrashLoopBackOff"
     assert row["tone"] == "bad"
     assert len(row["cells"]) == len(k8s.COLUMNS["pods"])
+    assert row["cells"][3] == "<none>"  # Pod IP
+    assert row["cells"][4] == "<none>"  # Host IP
+
+
+def test_format_describe_pod_includes_containers_and_events():
+    obj = pod(
+        containers=[running()],
+        init=[
+            {"name": "istio-init", "state": {"terminated": {"exitCode": 0, "reason": "Completed"}}},
+            {"name": "istio-proxy", "ready": True, "started": True, "state": {"running": {"startedAt": "2026-01-01T00:00:00Z"}}},
+        ],
+        init_specs=[{"name": "istio-init"}, {"name": "istio-proxy", "restartPolicy": "Always", "image": "proxy:1"}],
+        initialized=True,
+    )
+    obj["spec"]["containers"] = [{"name": "c0", "image": "app:1"}]
+    obj["status"]["podIP"] = "10.0.0.9"
+    obj["status"]["hostIP"] = "10.0.0.1"
+    obj["status"]["containerStatuses"] = [{"name": "c0", **running()}]
+    text = k8s.format_describe(
+        "pods",
+        obj,
+        [{"type": "Normal", "reason": "Started", "message": "Started container c0", "count": 1}],
+    )
+    assert "Name:" in text and "c0" in text
+    assert "istio-proxy" in text
+    assert "10.0.0.9" in text and "10.0.0.1" in text
+    assert "Events:" in text and "Started container c0" in text
+    assert "Status:" in text and "Running" in text
 
 
 def test_every_kind_has_columns():

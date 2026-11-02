@@ -202,6 +202,10 @@ def create_app(manager: k8s.ClusterManager, token: str, port: int, read_only: bo
     def resource_events(plural: str, ns: str, name: str) -> Any:
         return jsonify(events=k8s.events_for(api(), get_kind(plural), obj_ns(plural, ns), name))
 
+    @app.get("/api/r/<plural>/<ns>/<name>/describe")
+    def resource_describe(plural: str, ns: str, name: str) -> Any:
+        return jsonify(k8s.describe_resource(api(), plural, obj_ns(plural, ns), name))
+
     @app.get("/api/r/<plural>/<ns>/<name>/pods")
     def workload_pods(plural: str, ns: str, name: str) -> Any:
         if plural not in k8s.HAS_PODS:

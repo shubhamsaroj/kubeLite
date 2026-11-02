@@ -287,7 +287,7 @@
       </div>
       <div class="tabs">
         <template x-for="t in tabs" :key="t">
-          <div class="tab" :class="{ on: tab === t }" @click="setTab(t)" x-text="t === 'yaml' ? 'YAML' : t === 'map' ? 'Map' : t"></div>
+          <div class="tab" :class="{ on: tab === t }" @click="setTab(t)" x-text="tabLabel(t)"></div>
         </template>
       </div>
       <div class="grow" style="min-height:0;display:flex;flex-direction:column">
@@ -309,6 +309,20 @@
             <div class="kv" x-show="revealed">
               <template x-for="[k, v] in Object.entries(revealed || {})" :key="k"><div style="display:contents"><div class="k mono" x-text="k"></div><div class="v mono" style="white-space:pre-wrap" x-text="v"></div></div></template>
             </div>
+          </div>
+        </div>
+        <!-- describe (kubectl describe) — same flex shell as yaml-panel so long text scrolls -->
+        <div class="yaml-panel grow" x-show="tab === 'describe'">
+          <div class="toolbar">
+            <button class="primary" :disabled="describeLoading" @click="refreshDescribe()" x-text="describeLoading ? 'Refreshing…' : 'Refresh'"></button>
+            <button :disabled="!describe?.text" @click="copy(describe?.text || '')">Copy</button>
+            <span class="small muted" x-show="describe?.fetchedAt" x-text="`Fetched ${describe.fetchedAt}`"></span>
+            <span class="small tone-bad" x-show="describeError" x-text="describeError"></span>
+          </div>
+          <div class="scroll yaml-scroll describe-scroll">
+            <pre class="describe-view" x-show="describe?.text" x-text="describe?.text"></pre>
+            <div class="empty" x-show="describeLoading && !describe?.text">Loading describe…</div>
+            <div class="empty" x-show="!describeLoading && !describe?.text && !describeError">Open this tab to load a fresh describe.</div>
           </div>
         </div>
         <!-- resource map -->
@@ -333,8 +347,8 @@
         <div class="grow" style="min-height:0;display:flex;flex-direction:column" x-show="tab === 'shell'">
           <div class="toolbar" x-show="sel?.row.containers?.length > 1">
             <span class="small muted">Container</span>
-            <select @change="openTerminal($event.target.value)">
-              <template x-for="c in sel?.row.containers || []"><option :value="c" x-text="c"></option></template>
+            <select :value="shellContainer || sel?.row.defaultContainer || sel?.row.containers?.[0]" @change="openTerminal($event.target.value)">
+              <template x-for="c in sel?.row.containers || []"><option :value="c" x-text="c === sel?.row.defaultContainer ? c + ' (default)' : c"></option></template>
             </select>
           </div>
           <div class="term grow" x-ref="term"></div>
