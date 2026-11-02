@@ -1,2 +1,0 @@
-[console_scripts]
-kubelite = kubelite.__main__:main
